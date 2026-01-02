@@ -1,1 +1,42 @@
-curl -o /opt/z4r.sh https://raw.githubusercontent.com/IndeecFOX/zapret4rocket/master/z4r.sh && bash /opt/z4r.sh "$@" && rm /opt/z4r.sh
+#!/bin/sh
+set -e
+
+OWNER="AloofLibra"
+REPO="zapret4rocket"
+BRANCH="GV-Fix"
+
+PKG_URL="https://github.com/${OWNER}/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
+
+DEST="/opt/z4r"
+TMP="/tmp/z4r.$$"
+
+mkdir -p "$TMP" "$DEST"
+
+curl -fsSL "$PKG_URL" | tar -xz -C "$TMP"
+
+SRC_DIR="$(find "$TMP" -maxdepth 1 -type d -name "${REPO}-*" | head -n 1)"
+[ -z "$SRC_DIR" ] && echo "Не найден каталог ${REPO}-* после распаковки" >&2 && exit 1
+
+# Обновляем содержимое /opt/z4r атомарно (без мусора от старых версий)
+rm -rf "$DEST/lib"
+cp -f "$SRC_DIR/z4r.sh" "$DEST/z4r.sh"
+cp -a "$SRC_DIR/lib" "$DEST/"
+
+# Ресурсы (если они есть в ветке — подтянем)
+for d in lists extra_strats fake Entware; do
+  [ -d "$SRC_DIR/$d" ] && { rm -rf "$DEST/$d"; cp -a "$SRC_DIR/$d" "$DEST/"; }
+done
+for f in config.default recommendations.txt; do
+  [ -f "$SRC_DIR/$f" ] && cp -f "$SRC_DIR/$f" "$DEST/$f"
+done
+
+# Совместимость со старым launcher-поиском
+ln -sf "$DEST/z4r.sh" /opt/z4r.sh
+
+# CRLF-страховка
+find "$DEST" -type f -name '*.sh' -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
+chmod +x "$DEST/z4r.sh"
+
+rm -rf "$TMP"
+
+exec bash /opt/z4r.sh "$@"
