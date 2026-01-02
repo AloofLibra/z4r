@@ -9,8 +9,8 @@ INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/main/z4r"
 # Определение пути для команды z4r
 if [ -d /opt/bin ]; then
     BIN_PATH="/opt/bin/z4r"
-elif [ -d /jffs/scripts ]; then
-    BIN_PATH="/jffs/scripts/z4r"
+#elif [ -d /jffs/scripts ]; then
+#    BIN_PATH="/jffs/scripts/z4r"
 elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
     BIN_PATH="/usr/local/bin/z4r"
 elif [ -d /usr/bin ] && [ -w /usr/bin ]; then
