@@ -4,39 +4,33 @@ set -e
 OWNER="AloofLibra"
 REPO="zapret4rocket"
 BRANCH="GV-Fix"
+RAW_BASE="https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}"
 
-PKG_URL="https://github.com/${OWNER}/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
+Z4R_MAIN="/opt/z4r.sh"
+Z4R_LIB="/opt/lib"
 
-DEST="/opt/z4r"
-TMP="/tmp/z4r.$$"
+mkdir -p "$Z4R_LIB"
 
-mkdir -p "$TMP" "$DEST"
+fetch() {
+  # fetch <repo_rel_path> <dest_file>
+  rel="$1"
+  dst="$2"
+  tmp="${dst}.tmp"
+  curl -fsSL --max-time 20 "${RAW_BASE}/${rel}" | sed 's/\r$//' > "$tmp"
+  mv -f "$tmp" "$dst"
+}
 
-curl -fsSL "$PKG_URL" | tar -xz -C "$TMP"
+# 1) Всегда обновляем entrypoint
+fetch "z4r.sh" "$Z4R_MAIN"
+chmod +x "$Z4R_MAIN"
 
-SRC_DIR="$(find "$TMP" -maxdepth 1 -type d -name "${REPO}-*" | head -n 1)"
-[ -z "$SRC_DIR" ] && echo "Не найден каталог ${REPO}-* после распаковки" >&2 && exit 1
+# 2) Вытаскиваем из z4r.sh список модулей: source "$SCRIPT_DIR/lib/xxx.sh"
+mods="$(sed -n 's|^[[:space:]]*source[[:space:]]\\+\"\\$SCRIPT_DIR/lib/\\([^\"]\\+\\)\".*|\\1|p' "$Z4R_MAIN")"
 
-# Обновляем содержимое /opt/z4r атомарно (без мусора от старых версий)
-rm -rf "$DEST/lib"
-cp -f "$SRC_DIR/z4r.sh" "$DEST/z4r.sh"
-cp -a "$SRC_DIR/lib" "$DEST/"
-
-# Ресурсы (если они есть в ветке — подтянем)
-for d in lists extra_strats fake Entware; do
-  [ -d "$SRC_DIR/$d" ] && { rm -rf "$DEST/$d"; cp -a "$SRC_DIR/$d" "$DEST/"; }
+# 3) Докачиваем минимально нужные lib/*.sh
+for m in $mods; do
+  [ -s "${Z4R_LIB}/$m" ] || fetch "lib/$m" "${Z4R_LIB}/$m"
 done
-for f in config.default recommendations.txt; do
-  [ -f "$SRC_DIR/$f" ] && cp -f "$SRC_DIR/$f" "$DEST/$f"
-done
 
-# Совместимость со старым launcher-поиском
-ln -sf "$DEST/z4r.sh" /opt/z4r.sh
-
-# CRLF-страховка
-find "$DEST" -type f -name '*.sh' -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
-chmod +x "$DEST/z4r.sh"
-
-rm -rf "$TMP"
-
+# 4) Запуск (строка важна для совместимости): opt/z4r.sh "$@"
 exec bash /opt/z4r.sh "$@"
