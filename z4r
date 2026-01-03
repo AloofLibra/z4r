@@ -9,8 +9,6 @@ INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/main/z4r"
 # Определение пути для команды z4r
 if [ -d /opt/bin ]; then
     BIN_PATH="/opt/bin/z4r"
-#elif [ -d /jffs/scripts ]; then
-#    BIN_PATH="/jffs/scripts/z4r"
 elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
     BIN_PATH="/usr/local/bin/z4r"
 elif [ -d /usr/bin ] && [ -w /usr/bin ]; then
@@ -89,12 +87,7 @@ TEMP_JSON="/tmp/z4r_json_$$"
 
 {
     # Загрузка основного скрипта в фоне
-    if $DL_CMD "${INSTALL_DIR}/z4r.sh" "$RAW_URL/z4r.sh" 2>/dev/null; then
-        chmod +x "${INSTALL_DIR}/z4r.sh"
-        echo "✓ z4r.sh загружен"
-    else
-        [ ! -f "${INSTALL_DIR}/z4r.sh" ] && echo "ERROR_Z4R" > /tmp/z4r_error_$$
-    fi
+    $DL_CMD "${INSTALL_DIR}/z4r.sh" "$RAW_URL/z4r.sh" 2>/dev/null
 } &
 Z4R_PID=$!
 
@@ -108,19 +101,9 @@ API_PID=$!
 wait $Z4R_PID
 wait $API_PID
 
-# Проверка критической ошибки
-if [ -f /tmp/z4r_error_$$ ]; then
-    rm -f /tmp/z4r_error_$$
-    echo "Ошибка: z4r.sh отсутствует"
-    exit 1
-fi
-
 # Парсинг JSON
 LIB_FILES=$(grep '"name":' "$TEMP_JSON" 2>/dev/null | grep '\.sh"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ')
 rm -f "$TEMP_JSON"
-
-# Fallback на стандартный набор
-[ -z "$LIB_FILES" ] && LIB_FILES="actions.sh netcheck.sh provider.sh recommendations.sh strategies.sh submenus.sh telemetry.sh ui.sh"
 
 # Параллельная загрузка библиотек
 echo "Загрузка библиотек..."
@@ -132,7 +115,7 @@ for file in $LIB_FILES; do
 done
 wait
 
-echo "✓ Компоненты загружены"
+echo "✓ z4r.sh и компоненты загружены"
 echo ""
 
 # Запуск z4r.sh
