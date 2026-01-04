@@ -65,12 +65,10 @@ if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
 else
     # Первый запуск - установка
     echo "Установка команды z4r в $BIN_PATH..."
-    mkdir -p "$(dirname "$BIN_PATH")"
 
     if [ -f "$SCRIPT_PATH" ]; then
         cp "$SCRIPT_PATH" "$BIN_PATH"
-    else
-        $DL_CMD "$BIN_PATH" $DL_TIMEOUT "$INSTALLER_URL" 2>/dev/null || 
+    else 
             echo "⚠ Не удалось установить команду z4r"
     fi
 
@@ -98,8 +96,7 @@ Z4R_PID=$!
 API_PID=$!
 
 # Ждем завершения обеих загрузок
-wait $Z4R_PID
-wait $API_PID
+wait "$Z4R_PID" "$API_PID"
 
 # Парсинг JSON
 LIB_FILES=$(grep '"name":' "$TEMP_JSON" 2>/dev/null | grep '\.sh"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ')
