@@ -77,7 +77,7 @@ else
 fi
 
 echo "=== Обновление zapret4rocket ==="
-mkdir -p "${INSTALL_DIR}/lib"
+mkdir -p "${INSTALL_DIR}/zapret/z4r_lib"
 
 # ОПТИМИЗАЦИЯ: Параллельная загрузка списка библиотек
 echo "Загрузка компонентов..."
@@ -106,7 +106,7 @@ echo "Загрузка библиотек..."
 } &
 for file in $LIB_FILES; do
     {
-        $DL_CMD "${INSTALL_DIR}/lib/${file}" "$RAW_URL/lib/${file}" 2>/dev/null 
+        $DL_CMD "${INSTALL_DIR}/zapret/z4r_lib/${file}" "$RAW_URL/lib/${file}" 2>/dev/null 
     } &
 done
 wait
