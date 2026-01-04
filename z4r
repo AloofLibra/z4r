@@ -1,10 +1,10 @@
 #!/bin/sh
 
-BRANCH="GV-Fix"
-RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
-API_URL="https://api.github.com/repos/AloofLibra/zapret4rocket/contents/lib?ref=${BRANCH}"
+BRANCH="master"
+RAW_URL="https://raw.githubusercontent.com/IndeecFOX/zapret4rocket/${BRANCH}"
+API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
-INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/main/z4r"
+INSTALLER_URL="https://raw.githubusercontent.com/IndeecFOX/z4r/main/z4r"
 
 # Определение пути для команды z4r
 if [ -d /opt/bin ]; then
