@@ -68,7 +68,7 @@ else
 
     if [ -f "$SCRIPT_PATH" ]; then
         cp "$SCRIPT_PATH" "$BIN_PATH"
-    rm -f $SCRIPT_PATH
+        rm -f $SCRIPT_PATH
     else 
             echo "⚠ Не удалось установить команду z4r"
     fi
@@ -80,15 +80,9 @@ fi
 echo "=== Обновление zapret4rocket ==="
 mkdir -p "${INSTALL_DIR}/lib"
 
-# ОПТИМИЗАЦИЯ: Параллельная загрузка z4r.sh и списка библиотек
+# ОПТИМИЗАЦИЯ: Параллельная загрузка списка библиотек
 echo "Загрузка компонентов..."
 TEMP_JSON="/tmp/z4r_json_$$"
-
-{
-    # Загрузка основного скрипта в фоне
-    $DL_CMD "${INSTALL_DIR}/z4r.sh" "$RAW_URL/z4r.sh" 2>/dev/null
-} &
-Z4R_PID=$!
 
 {
     # Загрузка списка библиотек в фоне
@@ -96,23 +90,29 @@ Z4R_PID=$!
 } &
 API_PID=$!
 
-# Ждем завершения обеих загрузок
-wait "$Z4R_PID" "$API_PID"
+# Ждем завершения загрузки списка библиотек
+wait "$API_PID"
 
 # Парсинг JSON
 LIB_FILES=$(grep '"name":' "$TEMP_JSON" 2>/dev/null | grep '\.sh"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ')
 rm -f "$TEMP_JSON"
 
-# Параллельная загрузка библиотек
+# Параллельная загрузка z4r.sh и библиотек
 echo "Загрузка библиотек..."
+{
+    # Загрузка основного скрипта в фоне
+    if $DL_CMD "${INSTALL_DIR}/z4r.sh" "$RAW_URL/z4r.sh" 2>/dev/null; then
+        chmod +x "${INSTALL_DIR}/z4r.sh"
+    fi
+} &
 for file in $LIB_FILES; do
     {
-        $DL_CMD "${INSTALL_DIR}/lib/${file}" "$RAW_URL/lib/${file}" 2>/dev/null
-    }
+        $DL_CMD "${INSTALL_DIR}/lib/${file}" "$RAW_URL/lib/${file}" 2>/dev/null 
+    } &
 done
 wait
 
-echo "✓ z4r.sh и компоненты загружены"
+echo "✓ Компоненты загружены"
 echo ""
 
 # Запуск z4r.sh
