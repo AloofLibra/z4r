@@ -67,8 +67,7 @@ else
     echo "Установка команды z4r в $BIN_PATH..."
 
     if [ -f "$SCRIPT_PATH" ]; then
-        cp "$SCRIPT_PATH" "$BIN_PATH"
-        rm -f $SCRIPT_PATH
+        mv "$SCRIPT_PATH" "$BIN_PATH"
     else 
             echo "⚠ Не удалось установить команду z4r"
     fi
