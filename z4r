@@ -5,6 +5,7 @@ RAW_URL="https://raw.githubusercontent.com/IndeecFOX/zapret4rocket/${BRANCH}"
 API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/IndeecFOX/z4r/main/z4r"
+LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh"
 
 # Определение пути для команды z4r
 if [ -d /opt/bin ]; then
@@ -94,6 +95,9 @@ wait "$API_PID"
 
 # Парсинг JSON
 LIB_FILES=$(grep '"name":' "$TEMP_JSON" 2>/dev/null | grep '\.sh"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ')
+if [ -z "$LIB_FILES" ]; then
+    LIB_FILES="$LIB_FILES_FALLBACK"
+fi
 rm -f "$TEMP_JSON"
 
 # Параллельная загрузка z4r.sh и библиотек
