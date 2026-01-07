@@ -1,7 +1,7 @@
 #!/bin/sh
 
 BRANCH="z2r"
-RAW_URL="https://raw.githubusercontent.com/IndeecFOX/zapret4rocket/${BRANCH}"
+RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
 API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
