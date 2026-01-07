@@ -1,0 +1,154 @@
+#!/bin/sh
+
+BRANCH="z2r"
+RAW_URL="https://raw.githubusercontent.com/AloofLibr/zapret4rocket/${BRANCH}"
+API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
+INSTALL_DIR="/opt"
+INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
+LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh"
+
+# Определение пути для команды z2r
+if [ -d /opt/bin ]; then
+    BIN_PATH="/opt/bin/z2r"
+elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    BIN_PATH="/usr/local/bin/z2r"
+elif [ -d /usr/bin ] && [ -w /usr/bin ]; then
+    BIN_PATH="/usr/bin/z2r"
+else
+    echo "Ошибка: не найдено подходящее место для установки"
+    exit 1
+fi
+
+# Проверка прав root для стандартных систем
+[ "$(id -u)" != "0" ] && [ ! -d /opt/bin ] && [ ! -d /jffs/scripts ] && {
+    echo "Ошибка: Скрипт должен быть запущен с правами root (используйте sudo)"
+    exit 1
+}
+
+# Проверка wget или curl
+if command -v curl >/dev/null 2>&1; then
+    DL_CMD="curl -sS -L -o"
+    DL_TIMEOUT="--max-time 3"
+elif command -v wget >/dev/null 2>&1; then
+    DL_CMD="wget -q -O"
+    DL_TIMEOUT="-T 3"
+else
+    echo "Ошибка: wget или curl не найдены"
+    exit 1
+fi
+
+# Определение откуда запущен скрипт
+if command -v readlink >/dev/null 2>&1; then
+    SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
+elif command -v realpath >/dev/null 2>&1; then
+    SCRIPT_PATH=$(realpath "$0" 2>/dev/null || echo "$0")
+else
+    SCRIPT_PATH="$0"
+fi
+
+# Если запущен из установленной команды - проверяем обновления
+if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
+    echo "Проверка обновлений установщика..."
+    TEMP_INSTALLER="/tmp/z2r_inst_$$"
+
+    if $DL_CMD "$TEMP_INSTALLER" $DL_TIMEOUT "$INSTALLER_URL" 2>/dev/null; then
+        if ! cmp "$SCRIPT_PATH" "$TEMP_INSTALLER" >/dev/null 2>&1; then
+            echo "✓ Найдено обновление установщика"
+            cp "$TEMP_INSTALLER" "$BIN_PATH"
+            chmod +x "$BIN_PATH"
+            rm -f "$TEMP_INSTALLER"
+            echo "✓ Установщик обновлен, перезапуск..."
+            echo ""
+            exec "$BIN_PATH" "$@"
+        fi
+        rm -f "$TEMP_INSTALLER"
+    fi
+else
+    # Первый запуск - установка
+    echo "Установка команды z2r в $BIN_PATH..."
+
+    if [ -f "$SCRIPT_PATH" ]; then
+        mv "$SCRIPT_PATH" "$BIN_PATH"
+    else 
+            echo "⚠ Не удалось установить команду z2r"
+    fi
+
+    [ -f "$BIN_PATH" ] && chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
+    echo ""
+fi
+
+echo "=== Обновление zapret4rocket ==="
+mkdir -p "${INSTALL_DIR}/zapret2/z2r_lib"
+mkdir -p "${INSTALL_DIR}/zapret2/extra_strats"
+rm -rf "${INSTALL_DIR}/zapret2/extra_strats/TCP" "${INSTALL_DIR}/zapret2/extra_strats/UDP"
+
+# ОПТИМИЗАЦИЯ: Параллельная загрузка списка библиотек
+echo "Загрузка компонентов..."
+TEMP_JSON="/tmp/z2r_json_$$"
+
+{
+    # Загрузка списка библиотек в фоне
+    $DL_CMD "$TEMP_JSON" $DL_TIMEOUT "$API_URL" 2>/dev/null || echo "[]" > "$TEMP_JSON"
+} &
+API_PID=$!
+
+# Ждем завершения загрузки списка библиотек
+wait "$API_PID"
+
+# Парсинг JSON
+LIB_FILES=$(grep '"name":' "$TEMP_JSON" 2>/dev/null | grep '\.sh"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ')
+if [ -z "$LIB_FILES" ]; then
+    LIB_FILES="$LIB_FILES_FALLBACK"
+fi
+rm -f "$TEMP_JSON"
+
+# Параллельная загрузка z2r.sh и библиотек
+echo "Загрузка библиотек..."
+{
+    # Загрузка основного скрипта в фоне
+    if $DL_CMD "${INSTALL_DIR}/z2r.sh" "$RAW_URL/z2r.sh" 2>/dev/null; then
+        chmod +x "${INSTALL_DIR}/z2r.sh"
+    fi
+} &
+for file in $LIB_FILES; do
+    {
+        $DL_CMD "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "$RAW_URL/lib/${file}" 2>/dev/null 
+    } &
+done
+wait
+
+echo "✓ Компоненты загружены"
+echo ""
+# Загрузка списков стратегий (без нумерованных файлов)
+echo "Загрузка extra_strats list.txt..."
+{
+    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/TCP_YT_list.txt" "$RAW_URL/extra_strats/TCP/YT/List.txt" 2>/dev/null
+} &
+{
+    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/TCP_RKN_list.txt" "$RAW_URL/extra_strats/TCP/RKN/List.txt" 2>/dev/null
+} &
+{
+    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/TCP_GV_list.txt" "$RAW_URL/extra_strats/TCP/GV/List.txt" 2>/dev/null
+} &
+{
+    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/UDP_YT_list.txt" "$RAW_URL/extra_strats/UDP/YT/List.txt" 2>/dev/null
+} &
+wait
+
+echo "? extra_strats list.txt загружены"
+echo ""
+# Запуск z2r.sh
+echo "=== Запуск z2r.sh ==="
+cd "${INSTALL_DIR}" || exit 1
+
+# Определяем shell
+if command -v bash >/dev/null 2>&1; then
+    SHELL_CMD="bash"
+elif command -v ash >/dev/null 2>&1; then
+    SHELL_CMD="ash"
+else
+    SHELL_CMD="sh"
+fi
+
+# Перенаправляем stdin на терминал если запущено через pipe
+[ -t 0 ] && exec $SHELL_CMD ./z2r.sh "$@" || exec $SHELL_CMD ./z2r.sh "$@" < /dev/tty
