@@ -81,6 +81,7 @@ echo "=== Обновление zapret4rocket ==="
 mkdir -p "${INSTALL_DIR}/zapret2/z2r_lib"
 mkdir -p "${INSTALL_DIR}/zapret2/extra_strats"
 rm -rf "${INSTALL_DIR}/zapret2/extra_strats/TCP" "${INSTALL_DIR}/zapret2/extra_strats/UDP"
+mkdir -p "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra"
 
 # ОПТИМИЗАЦИЯ: Параллельная загрузка списка библиотек
 echo "Загрузка компонентов..."
@@ -118,6 +119,17 @@ done
 wait
 
 echo "✓ Компоненты загружены"
+echo ""
+# Оркестратор и locked.lua (ручной режим)
+{
+    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "$RAW_URL/orchestra/orchestrator.sh" 2>/dev/null
+    chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
+} &
+{
+    $DL_CMD "${INSTALL_DIR}/zapret2/lua/locked.lua" "$RAW_URL/orchestra/locked.lua" 2>/dev/null
+} &
+wait
+echo "✓ Оркестратор и locked.lua загружены"
 echo ""
 # Загрузка списков стратегий (без нумерованных файлов)
 echo "Загрузка extra_strats list.txt..."
