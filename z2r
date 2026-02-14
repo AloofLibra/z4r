@@ -1,7 +1,7 @@
 #!/bin/sh
 
 BRANCH="z2r"
-RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
+RAW_URL="https://raw.githubusercontent.com/AloofLibr/zapret4rocket/${BRANCH}"
 API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
@@ -25,12 +25,11 @@ fi
     exit 1
 }
 
-
 # Проверка wget или curl
-if command -v curl >/dev/null 2>&1; then
+if which curl >/dev/null 2>&1; then
     DL_CMD="curl -sS -L -o"
     DL_TIMEOUT="--max-time 3"
-elif command -v wget >/dev/null 2>&1; then
+elif which wget >/dev/null 2>&1; then
     DL_CMD="wget -q -O"
     DL_TIMEOUT="-T 3"
 else
@@ -39,9 +38,9 @@ else
 fi
 
 # Определение откуда запущен скрипт
-if command -v readlink >/dev/null 2>&1; then
+if which readlink >/dev/null 2>&1; then
     SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
-elif command -v realpath >/dev/null 2>&1; then
+elif which realpath >/dev/null 2>&1; then
     SCRIPT_PATH=$(realpath "$0" 2>/dev/null || echo "$0")
 else
     SCRIPT_PATH="$0"
@@ -155,9 +154,9 @@ echo "=== Запуск z2r.sh ==="
 cd "${INSTALL_DIR}" || exit 1
 
 # Определяем shell
-if command -v bash >/dev/null 2>&1; then
+if which bash >/dev/null 2>&1; then
     SHELL_CMD="bash"
-elif command -v ash >/dev/null 2>&1; then
+elif which ash >/dev/null 2>&1; then
     SHELL_CMD="ash"
 else
     SHELL_CMD="sh"
