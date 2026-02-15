@@ -193,14 +193,15 @@ echo ""
 echo "=== Запуск z2r.sh ==="
 cd "${INSTALL_DIR}" || exit 1
 
-# Определяем shell
-if which bash >/dev/null 2>&1; then
+if ensure_bash && which bash >/dev/null 2>&1; then
     SHELL_CMD="bash"
 elif which ash >/dev/null 2>&1; then
     SHELL_CMD="ash"
 else
     SHELL_CMD="sh"
 fi
+
+[ "$SHELL_CMD" != "bash" ] && echo "⚠ bash недоступен, запускаю через $SHELL_CMD"
 
 # Перенаправляем stdin на терминал если запущено через pipe
 [ -t 0 ] && exec $SHELL_CMD ./z2r.sh "$@" || exec $SHELL_CMD ./z2r.sh "$@" < /dev/tty
