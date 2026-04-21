@@ -171,21 +171,6 @@ echo ""
 wait
 echo "✓ Оркестратор и locked.lua загружены"
 echo ""
-# Загрузка списков стратегий (без нумерованных файлов)
-echo "Загрузка extra_strats list.txt..."
-{
-    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/TCP_YT_list.txt" "$RAW_URL/extra_strats/TCP/YT/List.txt" 2>/dev/null
-} &
-{
-    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/TCP_RKN_list.txt" "$RAW_URL/extra_strats/TCP/RKN/List.txt" 2>/dev/null
-} &
-{
-    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/TCP_GV_list.txt" "$RAW_URL/extra_strats/TCP/GV/List.txt" 2>/dev/null
-} &
-{
-    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/UDP_YT_list.txt" "$RAW_URL/extra_strats/UDP/YT/List.txt" 2>/dev/null
-} &
-wait
 
 echo "? extra_strats list.txt загружены"
 echo ""
