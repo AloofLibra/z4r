@@ -3,7 +3,7 @@
 BRANCH="z2r"
 RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
 MIRROR_URL="https://git.px.rkn.quest/AloofLibra/plain"
-API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
+API_URL="https://api.github.com/repos/AloofLibra/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
 INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=${BRANCH}"
