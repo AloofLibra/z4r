@@ -6,6 +6,7 @@ MIRROR_URL="https://git.px.rkn.quest/AloofLibra/plain"
 API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
+INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=${BRANCH}"
 LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 
 # Определение пути для команды z2r
@@ -61,7 +62,7 @@ download_installer() {
         return 0
     fi
     echo "GitHub недоступен для установщика. Пробую зеркало..."
-    download_url "$1" "$(mirror_url "z2r")"
+    download_url "$1" "$INSTALLER_MIRROR_URL"
 }
 
 # Попытка обеспечить наличие bash на разных платформах
