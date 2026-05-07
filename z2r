@@ -49,12 +49,23 @@ download_url() {
 download_project_file() {
     dest="$1"
     rel="$2"
+    tmp="${dest}.tmp.$$"
 
-    if download_url "$dest" "$RAW_URL/$rel"; then
+    mkdir -p "$(dirname "$dest")"
+    rm -f "$tmp"
+    if download_url "$tmp" "$RAW_URL/$rel"; then
+        mv -f "$tmp" "$dest"
         return 0
     fi
+    rm -f "$tmp"
     echo "GitHub недоступен для $rel. Пробую зеркало..."
-    download_url "$dest" "$(mirror_url "$rel")"
+    if download_url "$tmp" "$(mirror_url "$rel")"; then
+        mv -f "$tmp" "$dest"
+        return 0
+    fi
+    rm -f "$tmp"
+    echo "Не удалось скачать $rel"
+    return 1
 }
 
 download_installer() {
@@ -172,32 +183,38 @@ if [ -z "$LIB_FILES" ]; then
 fi
 rm -f "$TEMP_JSON"
 
-# Параллельная загрузка z2r.sh и библиотек
+# Загрузка z2r.sh и библиотек
 echo "Загрузка библиотек..."
-{
-    # Загрузка основного скрипта в фоне
-    if download_project_file "${INSTALL_DIR}/z2r.sh" "z2r.sh"; then
-        chmod +x "${INSTALL_DIR}/z2r.sh"
-    fi
-} &
+
+if ! download_project_file "${INSTALL_DIR}/z2r.sh" "z2r.sh"; then
+    echo "Ошибка: не удалось загрузить ${INSTALL_DIR}/z2r.sh"
+    exit 1
+fi
+chmod +x "${INSTALL_DIR}/z2r.sh"
+
+LIB_PIDS=""
 for file in $LIB_FILES; do
     {
         download_project_file "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "lib/${file}"
     } &
+    LIB_PIDS="$LIB_PIDS $!"
 done
-wait
+
+LIB_DOWNLOAD_FAILED=0
+for pid in $LIB_PIDS; do
+    wait "$pid" || LIB_DOWNLOAD_FAILED=1
+done
+if [ "$LIB_DOWNLOAD_FAILED" -ne 0 ]; then
+    echo "Ошибка: не все библиотеки загружены."
+    exit 1
+fi
 
 echo "✓ Компоненты загружены"
 echo ""
 # Оркестратор и locked.lua (ручной режим)
-{
-    download_project_file "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh"
-    chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
-} &
-{
-    download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.lua"
-} &
-wait
+download_project_file "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh" || exit 1
+chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
+download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.lua" || exit 1
 echo "✓ Оркестратор и locked.lua загружены"
 echo ""
 
