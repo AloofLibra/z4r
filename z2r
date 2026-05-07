@@ -2,6 +2,7 @@
 
 BRANCH="z2r"
 RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
+MIRROR_URL="https://git.px.rkn.quest/AloofLibra/plain"
 API_URL="https://api.github.com/repos/IndeecFOX/zapret4rocket/contents/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
@@ -35,6 +36,33 @@ else
     echo "Ошибка: wget или curl не найдены"
     exit 1
 fi
+
+mirror_url() {
+    printf '%s/%s?h=%s' "$MIRROR_URL" "$1" "$BRANCH"
+}
+
+download_url() {
+    $DL_CMD "$1" $DL_TIMEOUT "$2" 2>/dev/null
+}
+
+download_project_file() {
+    dest="$1"
+    rel="$2"
+
+    if download_url "$dest" "$RAW_URL/$rel"; then
+        return 0
+    fi
+    echo "GitHub недоступен для $rel. Пробую зеркало..."
+    download_url "$dest" "$(mirror_url "$rel")"
+}
+
+download_installer() {
+    if download_url "$1" "$INSTALLER_URL"; then
+        return 0
+    fi
+    echo "GitHub недоступен для установщика. Пробую зеркало..."
+    download_url "$1" "$(mirror_url "z2r")"
+}
 
 # Попытка обеспечить наличие bash на разных платформах
 ensure_bash() {
@@ -91,7 +119,7 @@ if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
     echo "Проверка обновлений установщика..."
     TEMP_INSTALLER="/tmp/z2r_inst_$$"
 
-    if $DL_CMD "$TEMP_INSTALLER" $DL_TIMEOUT "$INSTALLER_URL" 2>/dev/null; then
+    if download_installer "$TEMP_INSTALLER"; then
         if ! cmp "$SCRIPT_PATH" "$TEMP_INSTALLER" >/dev/null 2>&1; then
             echo "✓ Найдено обновление установщика"
             cp "$TEMP_INSTALLER" "$BIN_PATH"
@@ -147,13 +175,13 @@ rm -f "$TEMP_JSON"
 echo "Загрузка библиотек..."
 {
     # Загрузка основного скрипта в фоне
-    if $DL_CMD "${INSTALL_DIR}/z2r.sh" "$RAW_URL/z2r.sh" 2>/dev/null; then
+    if download_project_file "${INSTALL_DIR}/z2r.sh" "z2r.sh"; then
         chmod +x "${INSTALL_DIR}/z2r.sh"
     fi
 } &
 for file in $LIB_FILES; do
     {
-        $DL_CMD "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "$RAW_URL/lib/${file}" 2>/dev/null 
+        download_project_file "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "lib/${file}"
     } &
 done
 wait
@@ -162,11 +190,11 @@ echo "✓ Компоненты загружены"
 echo ""
 # Оркестратор и locked.lua (ручной режим)
 {
-    $DL_CMD "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "$RAW_URL/orchestra/orchestrator.sh" 2>/dev/null
+    download_project_file "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh"
     chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
 } &
 {
-    $DL_CMD "${INSTALL_DIR}/zapret2/lua/locked.lua" "$RAW_URL/orchestra/locked.lua" 2>/dev/null
+    download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.lua"
 } &
 wait
 echo "✓ Оркестратор и locked.lua загружены"
