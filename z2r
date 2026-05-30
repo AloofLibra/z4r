@@ -3,11 +3,15 @@
 BRANCH="z2r"
 RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
 MIRROR_URL="https://git.px.rkn.quest/AloofLibra/plain"
-API_URL="https://api.github.com/repos/AloofLibra/zapret4rocket/contents/lib?ref=${BRANCH}"
+API_BASE_URL="https://api.github.com/repos/AloofLibra/zapret4rocket/contents"
+API_URL="${API_BASE_URL}/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
 INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=${BRANCH}"
 LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
+MAX_DOWNLOAD_JOBS=3
+SHA_CACHE_DIR="${INSTALL_DIR}/zapret2/.z2r_sha_cache"
 
 # Определение пути для команды z2r
 if [ -d /opt/bin ]; then
@@ -46,26 +50,136 @@ download_url() {
     $DL_CMD "$1" $DL_TIMEOUT "$2" 2>/dev/null
 }
 
+api_url() {
+    if [ -n "$1" ]; then
+        printf '%s/%s?ref=%s' "$API_BASE_URL" "$1" "$BRANCH"
+    else
+        printf '%s?ref=%s' "$API_BASE_URL" "$BRANCH"
+    fi
+}
+
+sha_cache_key() {
+    printf '%s' "$1" | tr '/ ' '__'
+}
+
+get_cached_sha() {
+    key=$(sha_cache_key "$1")
+    [ -f "${SHA_CACHE_DIR}/${key}" ] && sed -n '1p' "${SHA_CACHE_DIR}/${key}"
+}
+
+set_cached_sha() {
+    rel="$1"
+    sha="$2"
+    [ -z "$sha" ] && return 0
+    mkdir -p "$SHA_CACHE_DIR"
+    key=$(sha_cache_key "$rel")
+    printf '%s\n' "$sha" > "${SHA_CACHE_DIR}/${key}"
+}
+
+file_git_blob_sha() {
+    file="$1"
+    which sha1sum >/dev/null 2>&1 || return 1
+    [ -f "$file" ] || return 1
+    size=$(wc -c < "$file" 2>/dev/null | tr -d ' ')
+    [ -n "$size" ] || return 1
+    (printf 'blob %s\0' "$size"; cat "$file") | sha1sum | awk '{print $1}'
+}
+
+json_sha_by_name() {
+    json_file="$1"
+    wanted_name="$2"
+    awk -v wanted="$wanted_name" '
+        /"name"[[:space:]]*:/ {
+            name=$0
+            sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", name)
+            sub(/".*$/, "", name)
+            hit=(name == wanted)
+        }
+        hit && /"sha"[[:space:]]*:/ {
+            sha=$0
+            sub(/^.*"sha"[[:space:]]*:[[:space:]]*"/, "", sha)
+            sub(/".*$/, "", sha)
+            print sha
+            exit
+        }
+    ' "$json_file" 2>/dev/null
+}
+
 download_project_file() {
     dest="$1"
     rel="$2"
-    tmp="${dest}.tmp.$$"
+    remote_sha="$3"
+    tmp="${STAGE_DIR}/tmp/$(sha_cache_key "$rel").$$"
+    stage_dest="${STAGE_DIR}/files/${dest#/}"
+    stage_meta="${STAGE_DIR}/meta/$(sha_cache_key "$rel")"
 
-    mkdir -p "$(dirname "$dest")"
+    if [ -n "$remote_sha" ] && [ -f "$dest" ]; then
+        cached_sha=$(get_cached_sha "$rel")
+        if [ "$cached_sha" = "$remote_sha" ]; then
+            echo "Без изменений: $rel"
+            return 0
+        fi
+        local_sha=$(file_git_blob_sha "$dest")
+        if [ "$local_sha" = "$remote_sha" ]; then
+            set_cached_sha "$rel" "$remote_sha"
+            echo "Без изменений: $rel"
+            return 0
+        fi
+    fi
+
+    mkdir -p "$STAGE_DIR/tmp" "$(dirname "$stage_dest")" "$STAGE_DIR/meta"
     rm -f "$tmp"
     if download_url "$tmp" "$RAW_URL/$rel"; then
-        mv -f "$tmp" "$dest"
+        if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
+            rm -f "$tmp"
+            set_cached_sha "$rel" "$remote_sha"
+        else
+            mv -f "$tmp" "$stage_dest"
+            {
+                printf '%s\n' "$dest"
+                printf '%s\n' "$rel"
+                printf '%s\n' "$remote_sha"
+            } > "$stage_meta"
+        fi
         return 0
     fi
     rm -f "$tmp"
     echo "GitHub недоступен для $rel. Пробую зеркало..."
     if download_url "$tmp" "$(mirror_url "$rel")"; then
-        mv -f "$tmp" "$dest"
+        if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
+            rm -f "$tmp"
+        else
+            mv -f "$tmp" "$stage_dest"
+            {
+                printf '%s\n' "$dest"
+                printf '%s\n' "$rel"
+                printf '%s\n' ""
+            } > "$stage_meta"
+        fi
         return 0
     fi
     rm -f "$tmp"
     echo "Не удалось скачать $rel"
     return 1
+}
+
+apply_staged_updates() {
+    [ -d "$STAGE_DIR/meta" ] || return 0
+
+    for stage_meta in "$STAGE_DIR"/meta/*; do
+        [ -f "$stage_meta" ] || continue
+        dest=$(sed -n '1p' "$stage_meta")
+        rel=$(sed -n '2p' "$stage_meta")
+        remote_sha=$(sed -n '3p' "$stage_meta")
+        stage_dest="${STAGE_DIR}/files/${dest#/}"
+
+        [ -f "$stage_dest" ] || return 1
+        mkdir -p "$(dirname "$dest")"
+        mv -f "$stage_dest" "$dest" || return 1
+        set_cached_sha "$rel" "$remote_sha"
+    done
+
+    return 0
 }
 
 download_installer() {
@@ -117,6 +231,37 @@ ensure_bash() {
     return 1
 }
 
+cleanup_update_temps() {
+    rm -f "$TEMP_JSON" "$TEMP_ROOT_JSON" "$TEMP_ORCHESTRA_JSON" 2>/dev/null || true
+    [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR" 2>/dev/null || true
+}
+
+run_old_z2r() {
+    echo "Запускаю старую версию z2r.sh..."
+    cd "${INSTALL_DIR}" || exit 1
+
+    if ensure_bash && which bash >/dev/null 2>&1; then
+        SHELL_CMD="bash"
+    elif which ash >/dev/null 2>&1; then
+        SHELL_CMD="ash"
+    else
+        SHELL_CMD="sh"
+    fi
+
+    [ "$SHELL_CMD" != "bash" ] && echo "⚠ bash недоступен, запускаю через $SHELL_CMD"
+    [ -t 0 ] && exec $SHELL_CMD ./z2r.sh "$@" || exec $SHELL_CMD ./z2r.sh "$@" < /dev/tty
+}
+
+abort_update_run_old() {
+    echo "Обновление отменено: один или несколько файлов не удалось скачать."
+    cleanup_update_temps
+    if [ -f "${INSTALL_DIR}/z2r.sh" ]; then
+        run_old_z2r "$@"
+    fi
+    echo "Старая версия ${INSTALL_DIR}/z2r.sh не найдена."
+    exit 1
+}
+
 # Определение откуда запущен скрипт
 if which readlink >/dev/null 2>&1; then
     SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
@@ -160,79 +305,106 @@ fi
 echo "=== Обновление zapret4rocket ==="
 mkdir -p "${INSTALL_DIR}/zapret2/z2r_lib"
 mkdir -p "${INSTALL_DIR}/zapret2/extra_strats"
-rm -rf "${INSTALL_DIR}/zapret2/extra_strats/TCP" "${INSTALL_DIR}/zapret2/extra_strats/UDP"
 mkdir -p "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra"
+mkdir -p "$SHA_CACHE_DIR"
 
-# ОПТИМИЗАЦИЯ: Параллельная загрузка списка библиотек
+# Получаем легкие GitHub-манифесты с SHA, чтобы не качать неизменившиеся файлы
 echo "Загрузка компонентов..."
 TEMP_JSON="/tmp/z2r_json_$$"
+TEMP_ROOT_JSON="/tmp/z2r_root_json_$$"
+TEMP_ORCHESTRA_JSON="/tmp/z2r_orchestra_json_$$"
+STAGE_DIR="/tmp/z2r_stage_$$"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR/tmp" "$STAGE_DIR/files" "$STAGE_DIR/meta" || abort_update_run_old "$@"
 
 {
-    # Загрузка списка библиотек в фоне
     $DL_CMD "$TEMP_JSON" $DL_TIMEOUT "$API_URL" 2>/dev/null || echo "[]" > "$TEMP_JSON"
 } &
 API_PID=$!
+{
+    $DL_CMD "$TEMP_ROOT_JSON" $DL_TIMEOUT "$(api_url "")" 2>/dev/null || echo "[]" > "$TEMP_ROOT_JSON"
+} &
+ROOT_API_PID=$!
+{
+    $DL_CMD "$TEMP_ORCHESTRA_JSON" $DL_TIMEOUT "$(api_url "orchestra")" 2>/dev/null || echo "[]" > "$TEMP_ORCHESTRA_JSON"
+} &
+ORCHESTRA_API_PID=$!
 
-# Ждем завершения загрузки списка библиотек
 wait "$API_PID"
+wait "$ROOT_API_PID"
+wait "$ORCHESTRA_API_PID"
 
 # Парсинг JSON
 LIB_FILES=$(grep '"name":' "$TEMP_JSON" 2>/dev/null | grep '\.sh"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ')
 if [ -z "$LIB_FILES" ]; then
     LIB_FILES="$LIB_FILES_FALLBACK"
 fi
-rm -f "$TEMP_JSON"
+for required_file in $LIB_FILES_REQUIRED; do
+    case " $LIB_FILES " in
+        *" $required_file "*) ;;
+        *) LIB_FILES="$LIB_FILES $required_file" ;;
+    esac
+done
 
 # Загрузка z2r.sh и библиотек
 echo "Загрузка библиотек..."
 
-if ! download_project_file "${INSTALL_DIR}/z2r.sh" "z2r.sh"; then
+Z2R_SHA=$(json_sha_by_name "$TEMP_ROOT_JSON" "z2r.sh")
+if ! download_project_file "${INSTALL_DIR}/z2r.sh" "z2r.sh" "$Z2R_SHA"; then
     echo "Ошибка: не удалось загрузить ${INSTALL_DIR}/z2r.sh"
-    exit 1
+    abort_update_run_old "$@"
 fi
-chmod +x "${INSTALL_DIR}/z2r.sh"
 
 LIB_PIDS=""
+LIB_JOB_COUNT=0
+LIB_DOWNLOAD_FAILED=0
 for file in $LIB_FILES; do
+    file_sha=$(json_sha_by_name "$TEMP_JSON" "$file")
     {
-        download_project_file "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "lib/${file}"
+        download_project_file "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "lib/${file}" "$file_sha"
     } &
     LIB_PIDS="$LIB_PIDS $!"
+    LIB_JOB_COUNT=$((LIB_JOB_COUNT + 1))
+    if [ "$LIB_JOB_COUNT" -ge "$MAX_DOWNLOAD_JOBS" ]; then
+        for pid in $LIB_PIDS; do
+            wait "$pid" || LIB_DOWNLOAD_FAILED=1
+        done
+        LIB_PIDS=""
+        LIB_JOB_COUNT=0
+    fi
 done
 
-LIB_DOWNLOAD_FAILED=0
 for pid in $LIB_PIDS; do
     wait "$pid" || LIB_DOWNLOAD_FAILED=1
 done
 if [ "$LIB_DOWNLOAD_FAILED" -ne 0 ]; then
     echo "Ошибка: не все библиотеки загружены."
-    exit 1
+    abort_update_run_old "$@"
 fi
 
 echo "✓ Компоненты загружены"
 echo ""
 # Оркестратор и locked.lua (ручной режим)
-download_project_file "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh" || exit 1
-chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
-download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.lua" || exit 1
+ORCHESTRATOR_SHA=$(json_sha_by_name "$TEMP_ORCHESTRA_JSON" "orchestrator.sh")
+LOCKED_SHA=$(json_sha_by_name "$TEMP_ORCHESTRA_JSON" "locked.lua")
+download_project_file "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh" "$ORCHESTRATOR_SHA" || {
+    abort_update_run_old "$@"
+}
+download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.lua" "$LOCKED_SHA" || {
+    abort_update_run_old "$@"
+}
+
+if ! apply_staged_updates; then
+    echo "Ошибка: не удалось применить загруженные файлы."
+    abort_update_run_old "$@"
+fi
+[ -x "${INSTALL_DIR}/z2r.sh" ] || chmod +x "${INSTALL_DIR}/z2r.sh"
+[ -x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" ] || chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
+cleanup_update_temps
 echo "✓ Оркестратор и locked.lua загружены"
 echo ""
 
 echo "? extra_strats list.txt загружены"
 echo ""
-# Запуск z2r.sh
 echo "=== Запуск z2r.sh ==="
-cd "${INSTALL_DIR}" || exit 1
-
-if ensure_bash && which bash >/dev/null 2>&1; then
-    SHELL_CMD="bash"
-elif which ash >/dev/null 2>&1; then
-    SHELL_CMD="ash"
-else
-    SHELL_CMD="sh"
-fi
-
-[ "$SHELL_CMD" != "bash" ] && echo "⚠ bash недоступен, запускаю через $SHELL_CMD"
-
-# Перенаправляем stdin на терминал если запущено через pipe
-[ -t 0 ] && exec $SHELL_CMD ./z2r.sh "$@" || exec $SHELL_CMD ./z2r.sh "$@" < /dev/tty
+run_old_z2r "$@"
