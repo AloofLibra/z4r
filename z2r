@@ -460,7 +460,7 @@ download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.
     abort_update_run_old "$@"
 }
 
-if ! apply_staged_updates(); then
+if ! apply_staged_updates; then
     echo "Ошибка: не удалось применить загруженные файлы."
     abort_update_run_old "$@"
 fi
