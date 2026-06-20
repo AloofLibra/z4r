@@ -12,6 +12,9 @@ LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.s
 LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
 MAX_DOWNLOAD_JOBS=3
 SHA_CACHE_DIR="${INSTALL_DIR}/zapret2/.z2r_sha_cache"
+# Дополнительные аргументы curl для raw.githubusercontent.com.
+# Заполняется только после проверки IP через DoH; TLS-проверку не отключаем.
+RAW_DL_EXTRA_ARGS=""
 
 # Определение пути для команды z2r
 if [ -d /opt/bin ]; then
@@ -47,7 +50,14 @@ mirror_url() {
 }
 
 download_url() {
-    $DL_CMD "$1" $DL_TIMEOUT "$2" 2>/dev/null
+    # Третий аргумент нужен для curl --resolve. wget его не получает:
+    # старые сборки wget на роутерах не поддерживают аналогичный режим.
+    extra_args="${3:-}"
+    if which curl >/dev/null 2>&1; then
+        curl -sS -L -o "$1" $DL_TIMEOUT $extra_args "$2" 2>/dev/null
+        return $?
+    fi
+    wget -q -O "$1" $DL_TIMEOUT "$2" 2>/dev/null
 }
 
 api_url() {
@@ -105,6 +115,52 @@ json_sha_by_name() {
     ' "$json_file" 2>/dev/null
 }
 
+# Проверяем IP raw.githubusercontent.com через DoH и выбираем первый доступный.
+# Важно: проверка идет через curl --resolve к исходному hostname, поэтому
+# сертификат проверяется как обычно. -k/--insecure здесь намеренно не нужен.
+prepare_raw_github_resolve() {
+    doh_response=""
+    all_ips=""
+    ip=""
+    tmp_good="/tmp/z2r_raw_good_ips_$$"
+    probe_url="https://raw.githubusercontent.com/"
+
+    [ -z "$RAW_DL_EXTRA_ARGS" ] || return 0
+    which curl >/dev/null 2>&1 || return 0
+
+    echo "Проверка доступности raw.githubusercontent.com через Google DoH..."
+    doh_response=$(curl -fsSL --max-time 5 "https://dns.google/resolve?name=raw.githubusercontent.com&type=A" 2>/dev/null || true)
+    all_ips=$(echo "$doh_response" | grep -oE '"data":[[:space:]]*"([0-9]{1,3}\.){3}[0-9]{1,3}"' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)
+
+    if [ -z "$all_ips" ]; then
+        echo "Не удалось получить IP через DoH. Использую стандартный DNS."
+        return 0
+    fi
+
+    # Проверяем IP параллельно, чтобы не задерживать запуск на плохих адресах.
+    rm -f "$tmp_good"
+    for ip in $all_ips; do
+        (
+            if curl -sS --connect-timeout 5 -m 8 -o /dev/null --resolve "raw.githubusercontent.com:443:$ip" "$probe_url" >/dev/null 2>&1; then
+                echo "$ip" >> "$tmp_good"
+            fi
+        ) &
+    done
+    wait
+
+    ip=$(sed -n '1p' "$tmp_good" 2>/dev/null || true)
+    rm -f "$tmp_good"
+
+    if [ -n "$ip" ]; then
+        # Принудительно используем найденный IP только для GitHub raw.
+        # Остальные домены и зеркала скачиваются без этих аргументов.
+        RAW_DL_EXTRA_ARGS="--resolve raw.githubusercontent.com:443:$ip --resolve raw.githubusercontent.com:80:$ip"
+        echo "raw.githubusercontent.com: принудительно использую IP $ip"
+    else
+        echo "Не найден доступный IP raw.githubusercontent.com. При ошибке загрузки будет использовано зеркало."
+    fi
+}
+
 download_project_file() {
     dest="$1"
     rel="$2"
@@ -129,7 +185,8 @@ download_project_file() {
 
     mkdir -p "$STAGE_DIR/tmp" "$(dirname "$stage_dest")" "$STAGE_DIR/meta"
     rm -f "$tmp"
-    if download_url "$tmp" "$RAW_URL/$rel"; then
+    # Для GitHub raw передаем RAW_DL_EXTRA_ARGS, если DoH-проверка нашла рабочий IP.
+    if download_url "$tmp" "$RAW_URL/$rel" "$RAW_DL_EXTRA_ARGS"; then
         if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
             rm -f "$tmp"
             set_cached_sha "$rel" "$remote_sha"
@@ -145,7 +202,8 @@ download_project_file() {
     fi
     rm -f "$tmp"
     echo "GitHub недоступен для $rel. Пробую зеркало..."
-    if download_url "$tmp" "$(mirror_url "$rel")"; then
+    # Для зеркала --resolve raw.githubusercontent.com не нужен.
+    if download_url "$tmp" "$(mirror_url "$rel")" ""; then
         if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
             rm -f "$tmp"
         else
@@ -183,11 +241,12 @@ apply_staged_updates() {
 }
 
 download_installer() {
-    if download_url "$1" "$INSTALLER_URL"; then
+    # Установщик z4r тоже лежит на raw.githubusercontent.com.
+    if download_url "$1" "$INSTALLER_URL" "$RAW_DL_EXTRA_ARGS"; then
         return 0
     fi
     echo "GitHub недоступен для установщика. Пробую зеркало..."
-    download_url "$1" "$INSTALLER_MIRROR_URL"
+    download_url "$1" "$INSTALLER_MIRROR_URL" ""
 }
 
 # Попытка обеспечить наличие bash на разных платформах
@@ -270,6 +329,11 @@ elif which realpath >/dev/null 2>&1; then
 else
     SCRIPT_PATH="$0"
 fi
+
+# DoH-проверка должна выполниться до проверки обновления установщика:
+# если raw.githubusercontent.com частично недоступен, download_installer уже
+# будет знать рабочий IP или быстро уйдет на зеркало.
+prepare_raw_github_resolve
 
 # Если запущен из установленной команды - проверяем обновления
 if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
