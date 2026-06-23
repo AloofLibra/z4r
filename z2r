@@ -8,7 +8,7 @@ API_URL="${API_BASE_URL}/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
 INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=${BRANCH}"
-LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
+LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh advanced.sh"
 LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
 MAX_DOWNLOAD_JOBS=3
 SHA_CACHE_DIR="${INSTALL_DIR}/zapret2/.z2r_sha_cache"
