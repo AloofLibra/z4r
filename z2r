@@ -382,6 +382,12 @@ ensure_bash() {
         opkg install bash >/dev/null 2>&1 && return 0
     fi
 
+    # OpenWrt 25
+    if which apk >/dev/null 2>&1; then
+        apk update >/dev/null 2>&1 || true
+        apk add bash >/dev/null 2>&1 && return 0
+    fi
+
     # Debian / Ubuntu
     if which apt-get >/dev/null 2>&1; then
         apt-get update -y >/dev/null 2>&1 || true
