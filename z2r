@@ -155,6 +155,72 @@ check_local_dns() {
     return 1
 }
 
+# Скачивает и запускает скрипт gh_fix.sh для исправления проблем с GitHub
+# Параметры: $1 - рабочий IP, $2 - количество рабочих адресов, $3 - общее количество адресов
+run_gh_fix() {
+    which bash >/dev/null 2>&1 || {
+        echo "Ошибка: bash не найден. Скрипт gh_fix.sh требует bash."
+        return 1
+    }
+    
+    local gh_fix_url="https://raw.githubusercontent.com/MarkinAlexander/custom-scripts/main/gh_fix.sh"
+    local gh_fix_tmp="/tmp/gh_fix_$$"
+    local working_ip="$1"
+    local good_count="$2"
+    local total_count="$3"
+    
+    echo ""
+    echo "⚠ Обнаружены проблемы с доступностью raw.githubusercontent.com"
+    echo "  Доступно $good_count из $total_count адресов"
+    echo ""
+    echo "Есть решение: скрипт gh_fix.sh может исправить ситуацию"
+    echo "  - Скачает и предложит выбрать рабочие зеркала GitHub"
+    echo "  - На Keenetic: настроит DNS через CLI"
+    echo "  - На Linux/OpenWrt: пропишет в /etc/hosts"
+    echo ""
+    echo "Нажмите Enter для скачивания и запуска gh_fix.sh"
+    echo "Нажмите 0 для пропуска и продолжения с текущими настройками"
+    echo ""
+    printf "Ваш выбор: "
+    
+    read -r choice < /dev/tty 2>/dev/null || choice=""
+    
+    if [ "$choice" = "0" ]; then
+        echo "Пропускаю gh_fix.sh, продолжаю работу..."
+        return 0
+    fi
+    
+    echo ""
+    echo "Скачиваю gh_fix.sh..."
+    
+    # Скачиваем используя рабочий IP
+    local resolve_args=""
+    if [ -n "$working_ip" ]; then
+        resolve_args="--resolve raw.githubusercontent.com:443:$working_ip --resolve raw.githubusercontent.com:80:$working_ip"
+    fi
+    
+    if curl -sS -L -o "$gh_fix_tmp" --max-time 30 $resolve_args "$gh_fix_url" 2>/dev/null; then
+        chmod +x "$gh_fix_tmp"
+        echo "✓ Скрипт скачан, запускаю..."
+        echo ""
+        bash "$gh_fix_tmp" < /dev/tty
+        local exit_code=$?
+        rm -f "$gh_fix_tmp"
+        echo ""
+        if [ $exit_code -eq 0 ]; then
+            echo "✓ Скрипт gh_fix.sh завершен успешно"
+            echo "  После изменения настроек может потребоваться перезапуск скрипта"
+        else
+            echo "⚠ Скрипт gh_fix.sh завершился с кодом $exit_code"
+        fi
+        return 0
+    else
+        echo "✗ Не удалось скачать gh_fix.sh"
+        rm -f "$gh_fix_tmp"
+        return 1
+    fi
+}
+
 # Проверяем IP raw.githubusercontent.com через DoH и выбираем первый доступный.
 # Важно: проверка идет через curl --resolve к исходному hostname, поэтому
 # сертификат проверяется как обычно. -k/--insecure здесь намеренно не нужен.
@@ -195,11 +261,15 @@ prepare_raw_github_resolve() {
     rm -f "$tmp_good"
 
     if [ "$good_count" -eq "$total_count" ] && [ "$good_count" -gt 0 ]; then
-
         echo "✓ Все $good_count адрес(ов) raw.githubusercontent.com доступны через Google DoH"
     elif [ -n "$ip" ]; then
         RAW_DL_EXTRA_ARGS="--resolve raw.githubusercontent.com:443:$ip --resolve raw.githubusercontent.com:80:$ip"
         echo "raw.githubusercontent.com: доступно $good_count из $total_count адресов, использую IP $ip"
+        
+        # Предлагаем запустить gh_fix.sh если не все адреса рабочие
+        if [ "$good_count" -lt "$total_count" ]; then
+            run_gh_fix "$ip" "$good_count" "$total_count"
+        fi
     else
         echo "Не найден доступный IP raw.githubusercontent.com. При ошибке загрузки будет использовано зеркало."
     fi
