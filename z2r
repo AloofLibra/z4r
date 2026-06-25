@@ -178,15 +178,20 @@ run_gh_fix() {
     echo "  - На Keenetic: настроит DNS через CLI"
     echo "  - На Linux/OpenWrt: пропишет в /etc/hosts"
     echo ""
-    echo "Нажмите Enter для скачивания и запуска gh_fix.sh"
-    echo "Нажмите 0 для пропуска и продолжения с текущими настройками"
+    echo "Введите 1 для скачивания и запуска gh_fix.sh"
+    echo "Введите 0 для пропуска и продолжения с текущими настройками"
     echo ""
     printf "Ваш выбор: "
     
     read -r choice < /dev/tty 2>/dev/null || choice=""
     
-    if [ "$choice" = "0" ]; then
+    if [ "$choice" = "0" ] || [ -z "$choice" ]; then
         echo "Пропускаю gh_fix.sh, продолжаю работу..."
+        return 0
+    fi
+    
+    if [ "$choice" != "1" ]; then
+        echo "Неверный выбор. Пропускаю gh_fix.sh, продолжаю работу..."
         return 0
     fi
     
