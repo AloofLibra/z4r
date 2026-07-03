@@ -1,13 +1,13 @@
 #!/bin/sh
 
-BRANCH="z2r"
-RAW_URL="https://raw.githubusercontent.com/AloofLibra/zapret4rocket/${BRANCH}"
+BRANCH="zator"
+RAW_URL="https://raw.githubusercontent.com/AloofLibra/zator/${BRANCH}"
 MIRROR_URL="https://git.px.rkn.quest/AloofLibra/plain"
-API_BASE_URL="https://api.github.com/repos/AloofLibra/zapret4rocket/contents"
+API_BASE_URL="https://api.github.com/repos/AloofLibra/zator/contents"
 API_URL="${API_BASE_URL}/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
-INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=${BRANCH}"
+INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=z2r"
 LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
 MAX_DOWNLOAD_JOBS=3
@@ -492,7 +492,7 @@ else
     echo ""
 fi
 
-echo "=== Обновление zapret4rocket ==="
+echo "=== Обновление zator ==="
 mkdir -p "${INSTALL_DIR}/zapret2/z2r_lib"
 mkdir -p "${INSTALL_DIR}/zapret2/extra_strats"
 mkdir -p "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra"
