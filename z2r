@@ -8,8 +8,10 @@ BRANCH="$DEFAULT_BRANCH"
 RAW_URL="$DEFAULT_RAW_URL"
 API_BASE_URL=""
 MIRROR_URL=""
-INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
-INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=z2r"
+DEFAULT_INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
+DEFAULT_INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=z2r"
+INSTALLER_URL="$DEFAULT_INSTALLER_URL"
+INSTALLER_MIRROR_URL="$DEFAULT_INSTALLER_MIRROR_URL"
 LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
 MAX_DOWNLOAD_JOBS=3
@@ -34,12 +36,21 @@ load_conf() {
         *[[:space:]]*|"") ;;
         *) BRANCH="$conf_branch" ;;
     esac
+    conf_installer=$(sed -n 's/^INSTALLER_URL=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
+    case "$conf_installer" in
+        http://*|https://*)
+            case "$conf_installer" in
+                *[[:space:]]*|"") ;;
+                *) INSTALLER_URL="$conf_installer"; INSTALLER_MIRROR_URL="" ;;
+            esac
+            ;;
+    esac
 }
 
 save_conf() {
     mkdir -p "$INSTALL_DIR" 2>/dev/null
     conf_tmp="${Z2R_CONF}.tmp.$$"
-    if printf 'RAW_URL=%s\nBRANCH=%s\n' "$RAW_URL" "$BRANCH" > "$conf_tmp" 2>/dev/null; then
+    if printf 'RAW_URL=%s\nBRANCH=%s\nINSTALLER_URL=%s\n' "$RAW_URL" "$BRANCH" "$INSTALLER_URL" > "$conf_tmp" 2>/dev/null; then
         mv -f "$conf_tmp" "$Z2R_CONF" || rm -f "$conf_tmp"
     else
         rm -f "$conf_tmp"
@@ -54,6 +65,11 @@ derive_repo_endpoints() {
             repo_name=$(printf '%s' "$RAW_URL" | cut -d/ -f5)
             API_BASE_URL="https://api.github.com/repos/${repo_owner}/${repo_name}/contents"
             MIRROR_URL="https://git.px.rkn.quest/${repo_owner}/plain"
+            # Конвенция форков: загрузчик лежит в репо <owner>/z2r (ветка z2r).
+            if [ "$RAW_URL" != "$DEFAULT_RAW_URL" ] && [ "$INSTALLER_URL" = "$DEFAULT_INSTALLER_URL" ]; then
+                INSTALLER_URL="https://raw.githubusercontent.com/${repo_owner}/z2r/z2r/z2r"
+                INSTALLER_MIRROR_URL=""
+            fi
             ;;
         *)
             API_BASE_URL=""
@@ -68,6 +84,8 @@ case "${1:-}" in
     default)
         BRANCH="$DEFAULT_BRANCH"
         RAW_URL="$DEFAULT_RAW_URL"
+        INSTALLER_URL="$DEFAULT_INSTALLER_URL"
+        INSTALLER_MIRROR_URL="$DEFAULT_INSTALLER_MIRROR_URL"
         if [ -f "$Z2R_CONF" ]; then
             rm -f "$Z2R_CONF" && echo "✓ $Z2R_CONF удалён, используются значения по умолчанию"
         else
@@ -78,26 +96,43 @@ case "${1:-}" in
     http://*|https://*)
         RAW_URL="$1"
         shift
-        if [ -n "${1:-}" ]; then
-            BRANCH="$1"
-            shift
-        else
-            BRANCH=$(printf '%s' "$RAW_URL" | sed 's#/\+$##' | awk -F/ '{print $NF}')
-        fi
+        BRANCH=""
+        case "${1:-}" in
+            "") ;;
+            http://*|https://*)
+                INSTALLER_URL="$1"
+                INSTALLER_MIRROR_URL=""
+                shift
+                ;;
+            *)
+                BRANCH="$1"
+                shift
+                case "${1:-}" in
+                    http://*|https://*)
+                        INSTALLER_URL="$1"
+                        INSTALLER_MIRROR_URL=""
+                        shift
+                        ;;
+                esac
+                ;;
+        esac
+        [ -n "$BRANCH" ] || BRANCH=$(printf '%s' "$RAW_URL" | sed 's#/\+$##' | awk -F/ '{print $NF}')
         case "$RAW_URL$BRANCH" in
             ""|*[[:space:]]*)
                 echo "Ошибка: некорректный URL или ветка"
                 exit 1
                 ;;
         esac
+        derive_repo_endpoints
         save_conf
         echo "✓ Репозиторий: $RAW_URL (ветка: $BRANCH)"
+        echo "  Загрузчик: $INSTALLER_URL"
         echo "  Сохранено в $Z2R_CONF, сброс: z2r default"
         ;;
 esac
 
 derive_repo_endpoints
-[ "$RAW_URL" = "$DEFAULT_RAW_URL" ] || echo "Кастомный репозиторий: $RAW_URL (ветка: $BRANCH)"
+[ "$RAW_URL" = "$DEFAULT_RAW_URL" ] || echo "Кастомный репозиторий: $RAW_URL (ветка: $BRANCH), загрузчик: $INSTALLER_URL"
 
 # Определение пути для команды z2r
 if [ -d /opt/bin ]; then
@@ -469,10 +504,10 @@ apply_staged_updates() {
 }
 
 download_installer() {
-    # Установщик z4r тоже лежит на raw.githubusercontent.com.
     if download_url "$1" "$INSTALLER_URL" "$RAW_DL_EXTRA_ARGS" && valid_script_file "$1"; then
         return 0
     fi
+    [ -n "$INSTALLER_MIRROR_URL" ] || return 1
     echo "GitHub недоступен для установщика. Пробую зеркало..."
     download_url "$1" "$INSTALLER_MIRROR_URL" "" && valid_script_file "$1"
 }
