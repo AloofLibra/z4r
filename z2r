@@ -1,20 +1,103 @@
 #!/bin/sh
 
-BRANCH="zator"
-RAW_URL="https://raw.githubusercontent.com/AloofLibra/zator/${BRANCH}"
-MIRROR_URL="https://git.px.rkn.quest/AloofLibra/plain"
-API_BASE_URL="https://api.github.com/repos/AloofLibra/zator/contents"
-API_URL="${API_BASE_URL}/lib?ref=${BRANCH}"
 INSTALL_DIR="/opt"
+Z2R_CONF="${INSTALL_DIR}/z2r.conf"
+DEFAULT_BRANCH="zator"
+DEFAULT_RAW_URL="https://raw.githubusercontent.com/AloofLibra/zator/${DEFAULT_BRANCH}"
+BRANCH="$DEFAULT_BRANCH"
+RAW_URL="$DEFAULT_RAW_URL"
+API_BASE_URL=""
+MIRROR_URL=""
 INSTALLER_URL="https://raw.githubusercontent.com/AloofLibra/z4r/z2r/z2r"
 INSTALLER_MIRROR_URL="https://git.px.rkn.quest/z2r/plain/z2r?h=z2r"
 LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.sh premium.sh strategies.sh submenus.sh actions.sh config.sh orchestra_state.sh"
 LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
 MAX_DOWNLOAD_JOBS=3
-SHA_CACHE_DIR="${INSTALL_DIR}/zapret2/.z2r_sha_cache"
+SHA_CACHE_DIR="${INSTALL_DIR}/zator/.z2r_sha_cache"
 # Дополнительные аргументы curl для raw.githubusercontent.com.
 # Заполняется только после проверки IP через DoH; TLS-проверку не отключаем.
 RAW_DL_EXTRA_ARGS=""
+
+load_conf() {
+    [ -f "$Z2R_CONF" ] || return 1
+    conf_raw=$(sed -n 's/^RAW_URL=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
+    conf_branch=$(sed -n 's/^BRANCH=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
+    case "$conf_raw" in
+        http://*|https://*)
+            case "$conf_raw" in
+                *[[:space:]]*|"") ;;
+                *) RAW_URL="$conf_raw" ;;
+            esac
+            ;;
+    esac
+    case "$conf_branch" in
+        *[[:space:]]*|"") ;;
+        *) BRANCH="$conf_branch" ;;
+    esac
+}
+
+save_conf() {
+    mkdir -p "$INSTALL_DIR" 2>/dev/null
+    conf_tmp="${Z2R_CONF}.tmp.$$"
+    if printf 'RAW_URL=%s\nBRANCH=%s\n' "$RAW_URL" "$BRANCH" > "$conf_tmp" 2>/dev/null; then
+        mv -f "$conf_tmp" "$Z2R_CONF" || rm -f "$conf_tmp"
+    else
+        rm -f "$conf_tmp"
+        echo "⚠ Не удалось записать $Z2R_CONF"
+    fi
+}
+
+derive_repo_endpoints() {
+    case "$RAW_URL" in
+        https://raw.githubusercontent.com/*/*/*)
+            repo_owner=$(printf '%s' "$RAW_URL" | cut -d/ -f4)
+            repo_name=$(printf '%s' "$RAW_URL" | cut -d/ -f5)
+            API_BASE_URL="https://api.github.com/repos/${repo_owner}/${repo_name}/contents"
+            MIRROR_URL="https://git.px.rkn.quest/${repo_owner}/plain"
+            ;;
+        *)
+            API_BASE_URL=""
+            MIRROR_URL=""
+            ;;
+    esac
+}
+
+load_conf
+
+case "${1:-}" in
+    default)
+        BRANCH="$DEFAULT_BRANCH"
+        RAW_URL="$DEFAULT_RAW_URL"
+        if [ -f "$Z2R_CONF" ]; then
+            rm -f "$Z2R_CONF" && echo "✓ $Z2R_CONF удалён, используются значения по умолчанию"
+        else
+            echo "Значения по умолчанию (файл $Z2R_CONF не найден)"
+        fi
+        shift
+        ;;
+    http://*|https://*)
+        RAW_URL="$1"
+        shift
+        if [ -n "${1:-}" ]; then
+            BRANCH="$1"
+            shift
+        else
+            BRANCH=$(printf '%s' "$RAW_URL" | sed 's#/\+$##' | awk -F/ '{print $NF}')
+        fi
+        case "$RAW_URL$BRANCH" in
+            ""|*[[:space:]]*)
+                echo "Ошибка: некорректный URL или ветка"
+                exit 1
+                ;;
+        esac
+        save_conf
+        echo "✓ Репозиторий: $RAW_URL (ветка: $BRANCH)"
+        echo "  Сохранено в $Z2R_CONF, сброс: z2r default"
+        ;;
+esac
+
+derive_repo_endpoints
+[ "$RAW_URL" = "$DEFAULT_RAW_URL" ] || echo "Кастомный репозиторий: $RAW_URL (ветка: $BRANCH)"
 
 # Определение пути для команды z2r
 if [ -d /opt/bin ]; then
@@ -29,7 +112,7 @@ else
 fi
 
 # Проверка прав root для стандартных систем
-[ "$UID" != "0" ] && [ ! -d /opt/bin ] && [ ! -d /jffs/scripts ] && {
+[ "$(id -u 2>/dev/null)" != "0" ] && [ ! -d /opt/bin ] && [ ! -d /jffs/scripts ] && {
     echo "Возможно скрипт запущен без прав root (sudo)"
 }
 
@@ -93,6 +176,26 @@ file_git_blob_sha() {
     size=$(wc -c < "$file" 2>/dev/null | tr -d ' ')
     [ -n "$size" ] || return 1
     (printf 'blob %s\0' "$size"; cat "$file") | sha1sum | awk '{print $1}'
+}
+
+# Сверяет скачанный файл с SHA из манифеста GitHub: ловит битые/HTML-ответы.
+# Без известного SHA или без sha1sum проверка пропускается.
+verify_downloaded_sha() {
+    file="$1"
+    expected_sha="$2"
+    [ -n "$expected_sha" ] || return 0
+    which sha1sum >/dev/null 2>&1 || return 0
+    actual_sha=$(file_git_blob_sha "$file")
+    [ -n "$actual_sha" ] || return 0
+    [ "$actual_sha" = "$expected_sha" ] && return 0
+    echo "⚠ Контрольная сумма не совпала: $file"
+    return 1
+}
+
+# Пригодный к запуску sh-файл: не пустой и начинается с shebang.
+valid_script_file() {
+    [ -s "$1" ] || return 1
+    head -n 1 "$1" 2>/dev/null | grep -q '^#!'
 }
 
 json_sha_by_name() {
@@ -261,7 +364,11 @@ prepare_raw_github_resolve() {
 
 
     total_count=$(echo "$all_ips" | wc -w | tr -d ' ')
-    good_count=$(wc -l < "$tmp_good" 2>/dev/null | tr -d ' ' || echo "0")
+    if [ -f "$tmp_good" ]; then
+        good_count=$(wc -l < "$tmp_good" | tr -d ' ')
+    else
+        good_count=0
+    fi
     ip=$(sed -n '1p' "$tmp_good" 2>/dev/null || true)
     rm -f "$tmp_good"
 
@@ -305,7 +412,7 @@ download_project_file() {
     mkdir -p "$STAGE_DIR/tmp" "$(dirname "$stage_dest")" "$STAGE_DIR/meta"
     rm -f "$tmp"
     # Для GitHub raw передаем RAW_DL_EXTRA_ARGS, если DoH-проверка нашла рабочий IP.
-    if download_url "$tmp" "$RAW_URL/$rel" "$RAW_DL_EXTRA_ARGS"; then
+    if download_url "$tmp" "$RAW_URL/$rel" "$RAW_DL_EXTRA_ARGS" && verify_downloaded_sha "$tmp" "$remote_sha"; then
         if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
             rm -f "$tmp"
             set_cached_sha "$rel" "$remote_sha"
@@ -320,20 +427,22 @@ download_project_file() {
         return 0
     fi
     rm -f "$tmp"
-    echo "GitHub недоступен для $rel. Пробую зеркало..."
     # Для зеркала --resolve raw.githubusercontent.com не нужен.
-    if download_url "$tmp" "$(mirror_url "$rel")" ""; then
-        if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
-            rm -f "$tmp"
-        else
-            mv -f "$tmp" "$stage_dest"
-            {
-                printf '%s\n' "$dest"
-                printf '%s\n' "$rel"
-                printf '%s\n' ""
-            } > "$stage_meta"
+    if [ -n "$MIRROR_URL" ]; then
+        echo "GitHub недоступен для $rel. Пробую зеркало..."
+        if download_url "$tmp" "$(mirror_url "$rel")" "" && verify_downloaded_sha "$tmp" "$remote_sha"; then
+            if [ -f "$dest" ] && cmp "$dest" "$tmp" >/dev/null 2>&1; then
+                rm -f "$tmp"
+            else
+                mv -f "$tmp" "$stage_dest"
+                {
+                    printf '%s\n' "$dest"
+                    printf '%s\n' "$rel"
+                    printf '%s\n' ""
+                } > "$stage_meta"
+            fi
+            return 0
         fi
-        return 0
     fi
     rm -f "$tmp"
     echo "Не удалось скачать $rel"
@@ -361,11 +470,11 @@ apply_staged_updates() {
 
 download_installer() {
     # Установщик z4r тоже лежит на raw.githubusercontent.com.
-    if download_url "$1" "$INSTALLER_URL" "$RAW_DL_EXTRA_ARGS"; then
+    if download_url "$1" "$INSTALLER_URL" "$RAW_DL_EXTRA_ARGS" && valid_script_file "$1"; then
         return 0
     fi
     echo "GitHub недоступен для установщика. Пробую зеркало..."
-    download_url "$1" "$INSTALLER_MIRROR_URL" ""
+    download_url "$1" "$INSTALLER_MIRROR_URL" "" && valid_script_file "$1"
 }
 
 # Попытка обеспечить наличие bash на разных платформах
@@ -433,7 +542,7 @@ run_old_z2r() {
     fi
 
     [ "$SHELL_CMD" != "bash" ] && echo "⚠ bash недоступен, запускаю через $SHELL_CMD"
-    [ -t 0 ] && exec $SHELL_CMD ./z2r.sh "$@" || exec $SHELL_CMD ./z2r.sh "$@" < /dev/tty
+    [ -t 0 ] && exec "$SHELL_CMD" ./z2r.sh "$@" || exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/tty
 }
 
 abort_update_run_old() {
@@ -469,12 +578,13 @@ if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
     if download_installer "$TEMP_INSTALLER"; then
         if ! cmp "$SCRIPT_PATH" "$TEMP_INSTALLER" >/dev/null 2>&1; then
             echo "✓ Найдено обновление установщика"
-            cp "$TEMP_INSTALLER" "$BIN_PATH"
-            chmod +x "$BIN_PATH"
-            rm -f "$TEMP_INSTALLER"
-            echo "✓ Установщик обновлен, перезапуск..."
-            echo ""
-            exec "$BIN_PATH" "$@"
+            if cp "$TEMP_INSTALLER" "$BIN_PATH" && chmod +x "$BIN_PATH"; then
+                rm -f "$TEMP_INSTALLER"
+                echo "✓ Установщик обновлен, перезапуск..."
+                echo ""
+                exec "$BIN_PATH" "$@"
+            fi
+            echo "⚠ Не удалось заменить установщик, продолжаю текущий"
         fi
         rm -f "$TEMP_INSTALLER"
     fi
@@ -482,20 +592,22 @@ else
     # Первый запуск - установка
     echo "Установка команды z2r в $BIN_PATH..."
 
-    if [ -f "$SCRIPT_PATH" ]; then
-        mv "$SCRIPT_PATH" "$BIN_PATH"
-    else 
-            echo "⚠ Не удалось установить команду z2r"
+    if [ -f "$SCRIPT_PATH" ] && mv "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null; then
+        :
+    else
+        cp "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null || echo "⚠ Не удалось установить команду z2r в $BIN_PATH"
     fi
 
-    [ -f "$BIN_PATH" ] && chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
+    if [ -f "$BIN_PATH" ]; then
+        chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
+    fi
     echo ""
 fi
 
 echo "=== Обновление zator ==="
-mkdir -p "${INSTALL_DIR}/zapret2/z2r_lib"
-mkdir -p "${INSTALL_DIR}/zapret2/extra_strats"
-mkdir -p "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra"
+mkdir -p "${INSTALL_DIR}/zator/z2r_lib"
+mkdir -p "${INSTALL_DIR}/zator/extra_strats/cache/orchestra"
+mkdir -p "${INSTALL_DIR}/zator/lua"
 mkdir -p "$SHA_CACHE_DIR"
 
 # Получаем легкие GitHub-манифесты с SHA, чтобы не качать неизменившиеся файлы
@@ -507,17 +619,19 @@ STAGE_DIR="/tmp/z2r_stage_$$"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/tmp" "$STAGE_DIR/files" "$STAGE_DIR/meta" || abort_update_run_old "$@"
 
-{
-    $DL_CMD "$TEMP_JSON" $DL_TIMEOUT "$API_URL" 2>/dev/null || echo "[]" > "$TEMP_JSON"
-} &
+fetch_api_manifest() {
+    if [ -z "$API_BASE_URL" ]; then
+        echo "[]" > "$1"
+        return 0
+    fi
+    $DL_CMD "$1" $DL_TIMEOUT "$(api_url "$2")" 2>/dev/null || echo "[]" > "$1"
+}
+
+fetch_api_manifest "$TEMP_JSON" "lib" &
 API_PID=$!
-{
-    $DL_CMD "$TEMP_ROOT_JSON" $DL_TIMEOUT "$(api_url "")" 2>/dev/null || echo "[]" > "$TEMP_ROOT_JSON"
-} &
+fetch_api_manifest "$TEMP_ROOT_JSON" "" &
 ROOT_API_PID=$!
-{
-    $DL_CMD "$TEMP_ORCHESTRA_JSON" $DL_TIMEOUT "$(api_url "orchestra")" 2>/dev/null || echo "[]" > "$TEMP_ORCHESTRA_JSON"
-} &
+fetch_api_manifest "$TEMP_ORCHESTRA_JSON" "orchestra" &
 ORCHESTRA_API_PID=$!
 
 wait "$API_PID"
@@ -551,7 +665,7 @@ LIB_DOWNLOAD_FAILED=0
 for file in $LIB_FILES; do
     file_sha=$(json_sha_by_name "$TEMP_JSON" "$file")
     {
-        download_project_file "${INSTALL_DIR}/zapret2/z2r_lib/${file}" "lib/${file}" "$file_sha"
+        download_project_file "${INSTALL_DIR}/zator/z2r_lib/${file}" "lib/${file}" "$file_sha"
     } &
     LIB_PIDS="$LIB_PIDS $!"
     LIB_JOB_COUNT=$((LIB_JOB_COUNT + 1))
@@ -574,14 +688,15 @@ fi
 
 echo "✓ Компоненты загружены"
 echo ""
-# Оркестратор и locked.lua (ручной режим)
+# Оркестратор и locked.lua (ручной режим). Отсутствие не критично:
+# z2r.sh при запуске сам докачает недостающие lua-модули.
 ORCHESTRATOR_SHA=$(json_sha_by_name "$TEMP_ORCHESTRA_JSON" "orchestrator.sh")
 LOCKED_SHA=$(json_sha_by_name "$TEMP_ORCHESTRA_JSON" "locked.lua")
-download_project_file "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh" "$ORCHESTRATOR_SHA" || {
-    abort_update_run_old "$@"
+download_project_file "${INSTALL_DIR}/zator/extra_strats/cache/orchestra/orchestrator.sh" "orchestra/orchestrator.sh" "$ORCHESTRATOR_SHA" || {
+    echo "⚠ orchestrator.sh не загружен"
 }
-download_project_file "${INSTALL_DIR}/zapret2/lua/locked.lua" "orchestra/locked.lua" "$LOCKED_SHA" || {
-    abort_update_run_old "$@"
+download_project_file "${INSTALL_DIR}/zator/lua/locked.lua" "orchestra/locked.lua" "$LOCKED_SHA" || {
+    echo "⚠ locked.lua не загружен, z2r.sh скачает его при запуске"
 }
 
 if ! apply_staged_updates; then
@@ -589,7 +704,7 @@ if ! apply_staged_updates; then
     abort_update_run_old "$@"
 fi
 [ -x "${INSTALL_DIR}/z2r.sh" ] || chmod +x "${INSTALL_DIR}/z2r.sh"
-[ -x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" ] || chmod +x "${INSTALL_DIR}/zapret2/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
+[ -x "${INSTALL_DIR}/zator/extra_strats/cache/orchestra/orchestrator.sh" ] || chmod +x "${INSTALL_DIR}/zator/extra_strats/cache/orchestra/orchestrator.sh" 2>/dev/null || true
 cleanup_update_temps
 echo "✓ Оркестратор и locked.lua загружены"
 echo ""
