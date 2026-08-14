@@ -577,6 +577,13 @@ run_old_z2r() {
     fi
 
     [ "$SHELL_CMD" != "bash" ] && echo "⚠ bash недоступен, запускаю через $SHELL_CMD"
+    # Прокидываем источник проекта из z2r.conf: иначе z2r.sh качает свои файлы
+    # (webui, config.default, lua, листы) из репозитория по умолчанию.
+    export Z2R_BRANCH="$BRANCH"
+    export Z2R_PROJECT_RAW_BASE="$RAW_URL"
+    if [ -n "$MIRROR_URL" ]; then
+        export Z2R_PROJECT_MIRROR_BASE="$MIRROR_URL"
+    fi
     [ -t 0 ] && exec "$SHELL_CMD" ./z2r.sh "$@" || exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/tty
 }
 
