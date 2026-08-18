@@ -131,10 +131,8 @@ BRANCH=$(printf '%s' "$RAW_URL" | awk -F/ '{print $NF}')
 
 derive_repo_endpoints
 if [ "$URL_ARGS_GIVEN" -eq 1 ]; then
-    save_conf
-    echo "✓ Репозиторий: $RAW_URL (ветка: $BRANCH)"
-    echo "  Загрузчик: $INSTALLER_URL"
-    echo "  Сохранено в $Z2R_CONF, сброс: z2r default"
+    echo "Репозиторий: $RAW_URL (ветка: $BRANCH)"
+    echo "Загрузчик: $INSTALLER_URL"
 fi
 [ "$RAW_URL" = "$DEFAULT_RAW_URL" ] || echo "Кастомный репозиторий: $RAW_URL (ветка: $BRANCH), загрузчик: $INSTALLER_URL"
 
@@ -516,6 +514,22 @@ download_installer() {
     download_url "$1" "$INSTALLER_MIRROR_URL" "" && valid_script_file "$1"
 }
 
+verify_repo_branch() {
+    [ -n "$API_BASE_URL" ] || return 0
+    which curl >/dev/null 2>&1 || return 0
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 8 $RAW_DL_EXTRA_ARGS "$RAW_URL/z2r.sh" 2>/dev/null)
+    case "$code" in
+        200) return 0 ;;
+        404)
+            echo "Ошибка: репозиторий или ветка не найдены: $RAW_URL"
+            echo "Укажите URL с существующей веткой или сбросьте настройки: z2r default"
+            exit 1
+            ;;
+        *) echo "⚠ Не удалось проверить ветку $BRANCH, продолжаю" ;;
+    esac
+    return 0
+}
+
 # Попытка обеспечить наличие bash на разных платформах
 ensure_bash() {
     if which bash >/dev/null 2>&1; then
@@ -614,6 +628,12 @@ fi
 # используем его и пропускаем Google DoH проверку.
 if ! check_local_dns; then
     prepare_raw_github_resolve
+fi
+
+if [ "$URL_ARGS_GIVEN" -eq 1 ]; then
+    verify_repo_branch
+    save_conf
+    echo "✓ Сохранено в $Z2R_CONF, сброс: z2r default"
 fi
 
 # Если запущен из установленной команды - проверяем обновления
