@@ -4,7 +4,6 @@ INSTALL_DIR="/opt"
 Z2R_CONF="${INSTALL_DIR}/z2r.conf"
 DEFAULT_BRANCH="zator"
 DEFAULT_RAW_URL="https://raw.githubusercontent.com/AloofLibra/zator/${DEFAULT_BRANCH}"
-BRANCH="$DEFAULT_BRANCH"
 RAW_URL="$DEFAULT_RAW_URL"
 API_BASE_URL=""
 MIRROR_URL=""
@@ -23,7 +22,6 @@ RAW_DL_EXTRA_ARGS=""
 load_conf() {
     [ -f "$Z2R_CONF" ] || return 1
     conf_raw=$(sed -n 's/^RAW_URL=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
-    conf_branch=$(sed -n 's/^BRANCH=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
     case "$conf_raw" in
         http://*|https://*)
             case "$conf_raw" in
@@ -31,10 +29,6 @@ load_conf() {
                 *) RAW_URL="$conf_raw" ;;
             esac
             ;;
-    esac
-    case "$conf_branch" in
-        *[[:space:]]*|"") ;;
-        *) BRANCH="$conf_branch" ;;
     esac
     conf_installer=$(sed -n 's/^INSTALLER_URL=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
     case "$conf_installer" in
@@ -80,9 +74,9 @@ derive_repo_endpoints() {
 
 load_conf
 
+URL_ARGS_GIVEN=0
 case "${1:-}" in
     default)
-        BRANCH="$DEFAULT_BRANCH"
         RAW_URL="$DEFAULT_RAW_URL"
         INSTALLER_URL="$DEFAULT_INSTALLER_URL"
         INSTALLER_MIRROR_URL="$DEFAULT_INSTALLER_MIRROR_URL"
@@ -95,8 +89,8 @@ case "${1:-}" in
         ;;
     http://*|https://*)
         RAW_URL="$1"
+        URL_ARGS_GIVEN=1
         shift
-        BRANCH=""
         case "${1:-}" in
             "") ;;
             http://*|https://*)
@@ -105,33 +99,43 @@ case "${1:-}" in
                 shift
                 ;;
             *)
-                BRANCH="$1"
-                shift
-                case "${1:-}" in
-                    http://*|https://*)
-                        INSTALLER_URL="$1"
-                        INSTALLER_MIRROR_URL=""
-                        shift
-                        ;;
-                esac
-                ;;
-        esac
-        [ -n "$BRANCH" ] || BRANCH=$(printf '%s' "$RAW_URL" | sed 's#/\+$##' | awk -F/ '{print $NF}')
-        case "$RAW_URL$BRANCH" in
-            ""|*[[:space:]]*)
-                echo "Ошибка: некорректный URL или ветка"
+                echo "Ошибка: ветка указывается в URL, а не отдельным аргументом"
+                echo "Пример: z2r https://raw.githubusercontent.com/<владелец>/<репо>/<ветка> [URL загрузчика]"
                 exit 1
                 ;;
         esac
-        derive_repo_endpoints
-        save_conf
-        echo "✓ Репозиторий: $RAW_URL (ветка: $BRANCH)"
-        echo "  Загрузчик: $INSTALLER_URL"
-        echo "  Сохранено в $Z2R_CONF, сброс: z2r default"
         ;;
 esac
 
+RAW_URL=$(printf '%s' "$RAW_URL" | sed 's#/\+$##')
+case "$RAW_URL" in
+    ""|*[[:space:]]*)
+        echo "Ошибка: некорректный URL"
+        exit 1
+        ;;
+esac
+case "$RAW_URL" in
+    https://raw.githubusercontent.com/*/*)
+        case "$RAW_URL" in
+            https://raw.githubusercontent.com/*/*/*) ;;
+            *)
+                echo "Ошибка: в URL не указана ветка: $RAW_URL"
+                echo "Пример: z2r https://raw.githubusercontent.com/<владелец>/<репо>/<ветка> [URL загрузчика]"
+                [ "$URL_ARGS_GIVEN" -eq 1 ] || echo "URL взят из $Z2R_CONF, сброс: z2r default"
+                exit 1
+                ;;
+        esac
+        ;;
+esac
+BRANCH=$(printf '%s' "$RAW_URL" | awk -F/ '{print $NF}')
+
 derive_repo_endpoints
+if [ "$URL_ARGS_GIVEN" -eq 1 ]; then
+    save_conf
+    echo "✓ Репозиторий: $RAW_URL (ветка: $BRANCH)"
+    echo "  Загрузчик: $INSTALLER_URL"
+    echo "  Сохранено в $Z2R_CONF, сброс: z2r default"
+fi
 [ "$RAW_URL" = "$DEFAULT_RAW_URL" ] || echo "Кастомный репозиторий: $RAW_URL (ветка: $BRANCH), загрузчик: $INSTALLER_URL"
 
 # Определение пути для команды z2r
