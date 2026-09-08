@@ -1056,6 +1056,25 @@ auto_tar_update() {
     builtin_tar_deploy "$atu_variant" latest
 }
 
+migrate_tar_install() {
+    # старая пофайловая установка без version.env: первый tar-деплой поверх
+    # неё, пользовательские файлы защищены классом keep-if-exists
+    mgi_variant="$(launcher_variant)"
+    echo "Установка ведётся пофайлово из ветки. Перехожу на релизные архивы ($mgi_variant)..."
+    if have_deploy_sh; then
+        if run_deploy_sh "$RELEASES_BASE/latest/zator-$mgi_variant.tar.gz" "$mgi_variant" latest; then
+            return 0
+        fi
+        echo "⚠ lib/deploy.sh не справился, пробую встроенный путь"
+    fi
+    rm -f "$LATEST_JSON"
+    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
+        echo "⚠ Сервер релизов недоступен."
+        return 1
+    fi
+    builtin_tar_deploy "$mgi_variant" latest
+}
+
 fresh_tar_install() {
     # rc: 0 — установлено, 1 — сбой (можно фолбэк на raw), 2 — нельзя ставить (место)
     echo "=== Установка zator с нуля ==="
@@ -1298,6 +1317,8 @@ elif ! zator_installed; then
         0) TAR_FLOW_DONE=1 ;;
         2) exit 1 ;;
     esac
+elif [ ! -f "$DEPLOY_VERSION_FILE" ]; then
+    migrate_tar_install && TAR_FLOW_DONE=1
 elif check_updates; then
     # сервер доступен: независимо от вердикта raw-фолбэк не нужен
     TRACKING_NOW=$(read_env_value "$DEPLOY_VERSION_FILE" TRACKING)
