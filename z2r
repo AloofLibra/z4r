@@ -1114,7 +1114,7 @@ run_old_z2r() {
         echo "ℹ Z2R_NO_EXEC=1: запуск z2r.sh пропущен"
         exit 0
     fi
-    echo "Запускаю старую версию z2r.sh..."
+    echo "Запускаю z2r.sh..."
     cd "${INSTALL_DIR}" || exit 1
 
     if ensure_bash && which bash >/dev/null 2>&1; then
