@@ -716,7 +716,9 @@ check_updates() {
     z_sha=$(read_env_value "$DEPLOY_VERSION_FILE" ZATOR_SHA)
     w_sha=$(read_env_value "$DEPLOY_VERSION_FILE" WEBUI_SHA)
     [ -n "$z_sha" ] && [ -n "$lz_sha" ] && [ "$z_sha" != "$lz_sha" ] && UPDATE_ZATOR=1
-    [ -n "$w_sha" ] && [ -n "$lw_sha" ] && [ "$w_sha" != "$lw_sha" ] && UPDATE_WEBUI=1
+    # без установленной панели обновлять нечего: WEBUI_SHA есть в version.env
+    # даже на core-установках (общая сборка)
+    webui_installed && [ -n "$w_sha" ] && [ -n "$lw_sha" ] && [ "$w_sha" != "$lw_sha" ] && UPDATE_WEBUI=1
     write_latest_env
     if [ "$UPDATE_ZATOR" = 1 ] || [ "$UPDATE_WEBUI" = 1 ]; then
         update_note="⬆ Есть обновление:"
