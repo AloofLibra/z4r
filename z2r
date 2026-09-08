@@ -117,29 +117,35 @@ print_usage() {
     echo "  check    только проверить обновления, ничего не качать"
     echo "  default  вернуться к репозиторию автора, конфиг удаляется"
     echo ""
-    echo "Ключи действуют только на текущий запуск, в конфиг не пишутся:"
-    echo "  -no-update     пропустить обновление этим запуском"
-    echo "  -raw-update    обновиться пофайлово из ветки, старый режим,"
+    echo "Ключи на текущий запуск, в конфиг не пишутся:"
+    echo "  -skip-update    пропустить обновление этим запуском"
+    echo "  -raw-update     обновиться пофайлово из ветки, старый режим,"
     echo "                 только этот запуск"
-    echo "  --variant=V    какой архив качать этим запуском:"
+    echo "  --variant=V     какой архив качать этим запуском:"
     echo "                 core | webui | full"
-    echo "  --version=TAG  поставить конкретный релиз и закрепить его:"
-    echo "                 автообновление выключится, пока не обновишь"
-    echo "                 вручную (update или меню п.5)"
     echo "  --tar ФАЙЛ     установить из локального tar.gz"
     echo ""
-    echo "URL репозитория — единственное, что сохраняется в конфиг:"
+    echo "Ключи с постоянным эффектом:"
+    echo "  -no-update      выключить автообновление насовсем:"
+    echo "                 пишет AUTOUPDATE=off в конфиг, ручное"
+    echo "                 обновление остаётся (update, меню п.5)"
+    echo "  --version=TAG   поставить конкретный релиз и закрепить его:"
+    echo "                 автообновление выключится, пока не обновишь"
+    echo "                 вручную (update или меню п.5)"
+    echo ""
+    echo "URL репозитория — сохраняется в конфиг:"
     echo "  https://raw.githubusercontent.com/<владелец>/<репо>/<ветка>"
     echo "  Переключает устройство на выбранный репозиторий, релизы"
     echo "  берутся из него же."
     echo ""
-    echo "Конфиг $Z2R_CONF, постоянные ключи (пишутся только вручную):"
+    echo "Конфиг $Z2R_CONF, постоянные ключи:"
     echo "  RAW_URL         репозиторий, меняется командой с URL"
     echo "  INSTALLER_URL   откуда обновляется сам загрузчик z2r"
-    echo "  AUTOUPDATE      on | off - off полностью выключает"
-    echo "                  автообновление, обновление только вручную"
+    echo "  AUTOUPDATE      on | off - выключается ключом -no-update,"
+    echo "                  возвращается вручную"
     echo "  DEPLOY_VARIANT  core | webui | full - постоянный вариант"
-    echo "                  архива вместо автоопределения"
+    echo "                  архива вместо автоопределения, пишется"
+    echo "                  только вручную"
 }
 
 show_conf() {
@@ -175,7 +181,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         help|-h|--help) print_usage; exit 0 ;;
         conf|config) show_conf; exit 0 ;;
-        -no-update) NO_UPDATE=1; shift ;;
+        -skip-update) NO_UPDATE=1; shift ;;
+        -no-update) NO_UPDATE=1; AUTOUPDATE="off"; PERSIST_AUTOUPDATE=1; shift ;;
         -raw-update) RAW_UPDATE=1; shift ;;
         update) CMD_UPDATE=1; shift ;;
         check) CMD_CHECK=1; shift ;;
@@ -1228,6 +1235,12 @@ if [ "$URL_ARGS_GIVEN" -eq 1 ]; then
     verify_repo_branch
     save_conf
     echo "✓ Сохранено в $Z2R_CONF, сброс: z2r default"
+fi
+
+if [ "$PERSIST_AUTOUPDATE" = 1 ]; then
+    [ "$URL_ARGS_GIVEN" -eq 1 ] || save_conf
+    echo "✓ Автообновление выключено насовсем: AUTOUPDATE=off в $Z2R_CONF"
+    echo "  Ручное обновление остаётся: z2r update или меню п.5"
 fi
 
 # Если запущен из установленной команды - проверяем обновления
