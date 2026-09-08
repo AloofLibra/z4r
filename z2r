@@ -102,6 +102,58 @@ derive_repo_endpoints() {
 
 load_conf
 
+print_usage() {
+    echo "z2r - загрузчик и обновление zator"
+    echo ""
+    echo "Запуск без аргументов: проверка обновлений, автообновление при"
+    echo "наличии нового релиза и запуск меню z2r (z2r.sh)."
+    echo ""
+    echo "Использование: z2r [команда] [ключи] [URL репозитория]"
+    echo ""
+    echo "Команды:"
+    echo "  help           эта справка"
+    echo "  conf           показать конфиг и установленную версию"
+    echo "  update         обновить zator до последнего релиза сейчас"
+    echo "  check          только проверить обновления, ничего не качать"
+    echo "  default        сброс к репозиторию автора, конфиг удаляется"
+    echo ""
+    echo "Ключи (указываются до URL):"
+    echo "  -no-update     разово не обновляться, только уведомление"
+    echo "  -raw-update    пофайловое обновление из ветки (старый режим)"
+    echo "  --variant=V    вариант архива: core | webui | full"
+    echo "  --version=TAG  поставить конкретный релиз и закрепить его"
+    echo "  --tar ФАЙЛ     установить из локального tar.gz (например, /tmp)"
+    echo ""
+    echo "URL репозитория:"
+    echo "  https://raw.githubusercontent.com/<владелец>/<репо>/<ветка>"
+    echo "  Переключает устройство на выбранный репозиторий, сохраняется"
+    echo "  в конфиг. Релизы берутся из того же репозитория."
+    echo ""
+    echo "Конфиг: $Z2R_CONF"
+    echo "  RAW_URL, INSTALLER_URL, AUTOUPDATE=on|off, DEPLOY_VARIANT"
+}
+
+show_conf() {
+    echo "Конфиг: $Z2R_CONF"
+    if [ -f "$Z2R_CONF" ]; then
+        echo "---"
+        cat "$Z2R_CONF"
+        echo "---"
+    else
+        echo "файл не найден, используются значения по умолчанию"
+    fi
+    echo ""
+    echo "Репозиторий:    $RAW_URL"
+    echo "Загрузчик:      $INSTALLER_URL"
+    echo "Автообновление: $AUTOUPDATE"
+    echo "Вариант архива: ${DEPLOY_VARIANT:-auto}"
+    if [ -f "$DEPLOY_VERSION_FILE" ]; then
+        echo ""
+        echo "Установлено:"
+        grep -E '^(ZATOR_VERSION|ZATOR_DATE|WEBUI_VERSION|WEBUI_DATE|TRACKING)=' "$DEPLOY_VERSION_FILE"
+    fi
+}
+
 # Флаги развёртывания разбираем до первого позиционного аргумента (URL/default).
 NO_UPDATE=0
 RAW_UPDATE=0
@@ -112,6 +164,8 @@ DEPLOY_VERSION_ARG=""
 LOCAL_TAR=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        help|-h|--help) print_usage; exit 0 ;;
+        conf|config) show_conf; exit 0 ;;
         -no-update) NO_UPDATE=1; shift ;;
         -raw-update) RAW_UPDATE=1; shift ;;
         update) CMD_UPDATE=1; shift ;;
@@ -123,7 +177,7 @@ while [ $# -gt 0 ]; do
             LOCAL_TAR="$2"
             shift 2
             ;;
-        -*) echo "⚠ Неизвестный флаг: $1 (игнорируется)"; shift ;;
+        -*) echo "⚠ Неизвестный флаг: $1 (игнорируется, справка: z2r help)"; shift ;;
         *) break ;;
     esac
 done
