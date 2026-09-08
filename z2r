@@ -129,6 +129,8 @@ print_usage() {
     echo "  -no-update      выключить автообновление насовсем:"
     echo "                 пишет AUTOUPDATE=off в конфиг, ручное"
     echo "                 обновление остаётся (update, меню п.5)"
+    echo "  -update         включить автообновление обратно:"
+    echo "                 пишет AUTOUPDATE=on в конфиг"
     echo "  --version=TAG   поставить конкретный релиз и закрепить его:"
     echo "                 автообновление выключится, пока не обновишь"
     echo "                 вручную (update или меню п.5)"
@@ -144,8 +146,7 @@ print_usage() {
     echo "                  задаётся вторым URL после репозитория"
     echo "                  (для форков подставляется автоматически),"
     echo "                  сбрасывается командой default"
-    echo "  AUTOUPDATE      on | off - выключается ключом -no-update,"
-    echo "                  возвращается вручную"
+    echo "  AUTOUPDATE      on | off - ключи -no-update / -update"
     echo "  DEPLOY_VARIANT  core | webui | full - постоянный вариант"
     echo "                  архива вместо автоопределения, пишется"
     echo "                  только вручную"
@@ -177,6 +178,7 @@ NO_UPDATE=0
 RAW_UPDATE=0
 CMD_UPDATE=0
 CMD_CHECK=0
+PERSIST_AUTOUPDATE_ON=0
 DEPLOY_VARIANT_ARG=""
 DEPLOY_VERSION_ARG=""
 LOCAL_TAR=""
@@ -186,6 +188,7 @@ while [ $# -gt 0 ]; do
         conf|config) show_conf; exit 0 ;;
         -skip-update) NO_UPDATE=1; shift ;;
         -no-update) NO_UPDATE=1; AUTOUPDATE="off"; PERSIST_AUTOUPDATE=1; shift ;;
+        -update) AUTOUPDATE="on"; PERSIST_AUTOUPDATE_ON=1; shift ;;
         -raw-update) RAW_UPDATE=1; shift ;;
         update) CMD_UPDATE=1; shift ;;
         check) CMD_CHECK=1; shift ;;
@@ -1261,6 +1264,11 @@ if [ "$PERSIST_AUTOUPDATE" = 1 ]; then
     [ "$URL_ARGS_GIVEN" -eq 1 ] || save_conf
     echo "✓ Автообновление выключено насовсем: AUTOUPDATE=off в $Z2R_CONF"
     echo "  Ручное обновление остаётся: z2r update или меню п.5"
+fi
+
+if [ "$PERSIST_AUTOUPDATE_ON" = 1 ]; then
+    [ "$URL_ARGS_GIVEN" -eq 1 ] || save_conf
+    echo "✓ Автообновление включено: AUTOUPDATE=on в $Z2R_CONF"
 fi
 
 # Если запущен из установленной команды - проверяем обновления
