@@ -756,13 +756,9 @@ ensure_space() {
 }
 
 verify_archive() {
-    # $1 файл, $2 ожидаемый sha256 (может быть пустым)
-    va_magic=$(head -c 2 "$1" 2>/dev/null | od -b 2>/dev/null | tr -s ' \t' ' ' | head -n 1)
-    case "$va_magic" in
-        *037*213*) ;;
-        *) echo "✗ Файл не является gzip-архивом: $1"; return 1 ;;
-    esac
-    gzip -t "$1" 2>/dev/null || { echo "✗ Архив повреждён (gzip -t): $1"; return 1; }
+    # $1 файл, $2 ожидаемый sha256 (может быть пустым); od есть не везде (OpenWrt),
+    # gzip -t сам ловит и HTML-страницы ошибок, и битые архивы
+    gzip -t "$1" 2>/dev/null || { echo "✗ Файл не является gzip-архивом или повреждён: $1"; return 1; }
     if [ -n "$2" ] && which sha256sum >/dev/null 2>&1; then
         va_actual=$(sha256sum "$1" 2>/dev/null | awk '{print $1}')
         [ "$va_actual" = "$2" ] || { echo "✗ Контрольная сумма архива не совпала"; return 1; }
