@@ -769,6 +769,15 @@ ensure_space() {
     return 0
 }
 
+tar_paths_ok() {
+    # члены архива не должны выбираться за пределы каталога распаковки
+    tar -tzf "$1" 2>/dev/null | while IFS= read -r entry; do
+        case "$entry" in
+            /*|../*|*/../*|*/..) exit 1 ;;
+        esac
+    done
+}
+
 verify_archive() {
     # $1 файл, $2 ожидаемый sha256 (может быть пустым); od есть не везде (OpenWrt),
     # gzip -t сам ловит и HTML-страницы ошибок, и битые архивы
@@ -787,6 +796,12 @@ verify_staging_manifest() {
     vsm_bad=0
     while IFS='|' read -r vsm_path vsm_dest vsm_cls vsm_sha vsm_size vsm_exec; do
         case "$vsm_path" in ""|'#'*) continue ;; esac
+        case "$vsm_path" in
+            /*|../*|*/../*|*/..)
+                echo "✗ Недопустимый путь в манифесте: $vsm_path"
+                return 1
+                ;;
+        esac
         vsm_actual=$(sha256sum "$1/$vsm_path" 2>/dev/null | awk '{print $1}')
         if [ "$vsm_actual" != "$vsm_sha" ]; then
             echo "✗ Повреждён файл в архиве: $vsm_path"
@@ -836,6 +851,19 @@ install_manifest_files() {
     imf_webui=0
     while IFS='|' read -r imf_path imf_dest imf_cls imf_sha imf_size imf_exec; do
         case "$imf_path" in ""|'#'*) continue ;; esac
+        case "$imf_path" in
+            /*|../*|*/../*|*/..)
+                echo "✗ Недопустимый путь в манифесте: $imf_path"
+                return 1
+                ;;
+        esac
+        case "$imf_dest" in
+            /opt/zator/*|/opt/z2r.sh) ;;
+            *)
+                echo "✗ Недопустимый dest в манифесте: $imf_dest"
+                return 1
+                ;;
+        esac
         case "$imf_dest" in
             /opt/z2r.sh) imf_dest="$INSTALL_DIR/z2r.sh" ;;
             /opt/zator/*) imf_dest="$ZATOR_ROOT/${imf_dest#/opt/zator/}" ;;
@@ -889,6 +917,11 @@ deploy_minimal() {
     [ "$DEPLOY_MODE" = "B" ] && dm_stage="$ZATOR_ROOT/.deploy-staging.$$"
     rm -rf "$dm_stage"
     mkdir -p "$dm_stage" || return 1
+    if ! tar_paths_ok "$1"; then
+        rm -rf "$dm_stage"
+        echo "✗ Архив содержит небезопасные пути"
+        return 1
+    fi
     if ! tar -xzf "$1" -C "$dm_stage" 2>/dev/null; then
         rm -rf "$dm_stage"
         echo "✗ Не удалось распаковать архив"
