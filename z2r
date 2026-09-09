@@ -87,6 +87,13 @@ derive_repo_endpoints() {
             MIRROR_URL="https://git.px.rkn.quest/${repo_owner}/plain"
             RELEASES_BASE="https://github.com/${repo_owner}/${repo_name}/releases/download"
             [ -n "$RELEASES_URL_OVERRIDE" ] && RELEASES_BASE="$RELEASES_URL_OVERRIDE"
+            # зеркало из меню z2r (п.5 -> п.10): sources.env переживает деплои
+            if [ -z "$RELEASES_URL_OVERRIDE" ]; then
+                sources_mirror=$(sed -n 's/^RELEASES_MIRROR="//p' "$ZATOR_ROOT/extra_strats/cache/deploy/sources.env" 2>/dev/null | tr -d '\r' | tail -n 1 | sed 's/"$//')
+                case "$sources_mirror" in
+                    http://*|https://*) RELEASES_BASE="$sources_mirror" ;;
+                esac
+            fi
             # Конвенция форков: загрузчик лежит в репо <owner>/z2r (ветка z2r).
             if [ "$RAW_URL" != "$DEFAULT_RAW_URL" ] && [ "$INSTALLER_URL" = "$DEFAULT_INSTALLER_URL" ]; then
                 INSTALLER_URL="https://raw.githubusercontent.com/${repo_owner}/z2r/z2r/z2r"
@@ -125,6 +132,8 @@ print_usage() {
     echo "                 core | webui | full"
     echo "  --tar ФАЙЛ     установить из локального tar.gz"
     echo ""
+    echo "Источник релизов: стандартный GitHub, зеркало из меню z2r"
+    echo "(п.5 -> п.10, sources.env) или переменная Z2R_RELEASES_URL."
     echo "Ключи с постоянным эффектом:"
     echo "  -no-update      выключить автообновление насовсем:"
     echo "                 пишет AUTOUPDATE=off в конфиг, ручное"
