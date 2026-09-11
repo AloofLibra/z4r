@@ -2,9 +2,11 @@
 
 # Основной путь обновления zator - tar-релизы GitHub (zator-{core,webui,full}.tar.gz,
 # собирает webui-src/scripts/pack-zator-tar.mjs). Развёртывание делегируется
-# /opt/zator/z2r_lib/deploy.sh, когда он уже на устройстве; на свежей установке
-# работает встроенный минимальный путь с теми же защитами файлов.
-# Пофайловый raw-путь остаётся резервом: -raw-update, недоступность релизов.
+# /opt/zator/z2r_lib/deploy.sh. На свежей установке лаунчер делает только
+# bootstrap: скачать архив, проверить, вытащить lib/deploy.sh и передать
+# ему управление (место/staging/манифест/version.env — целиком deploy.sh,
+# дублей логики больше нет). Пофайловый raw-путь остаётся резервом:
+# -raw-update, недоступность релизов.
 # Флаги: -no-update, -raw-update, update, check, --variant=core|webui|full,
 #        --version=<релиз> (пин), --tar <файл>.
 
@@ -31,8 +33,6 @@ RELEASES_URL_OVERRIDE="${Z2R_RELEASES_URL:-}"
 LATEST_JSON="/tmp/z2r_latest_$$.json"
 AUTOUPDATE="on"
 DEPLOY_VARIANT=""
-ZAPRET2_MARGIN_KB=8192
-DEPLOY_SLACK_KB=1024
 # Дополнительные аргументы curl для raw.githubusercontent.com.
 # Заполняется только после проверки IP через DoH; TLS-проверку не отключаем.
 RAW_DL_EXTRA_ARGS=""
@@ -743,41 +743,6 @@ check_updates() {
     return 0
 }
 
-ensure_space() {
-    # $1 размер архива КБ, $2 развёрнутый объём КБ; выбирает DEPLOY_MODE=A|B|C
-    DEPLOY_MODE=A
-    sp_tmp=$(free_kb /tmp)
-    sp_opt=$(free_kb "$INSTALL_DIR")
-    if [ -z "$sp_tmp" ] || [ -z "$sp_opt" ]; then
-        echo "⚠ Не удалось определить свободное место (df), проверки пропущены"
-        return 0
-    fi
-    sp_need=$(( $2 + ZAPRET2_MARGIN_KB + DEPLOY_SLACK_KB ))
-    if [ "$sp_opt" -lt "$sp_need" ]; then
-        echo "✗ Недостаточно места на разделе /opt: свободно $((sp_opt / 1024)) МБ, нужно около $((sp_need / 1024)) МБ (zator + zapret2 + рост листов)."
-        return 1
-    fi
-    if [ "$sp_tmp" -ge $(( $1 + $2 + 512 )) ]; then
-        DEPLOY_MODE=A
-    elif [ "$sp_opt" -ge $(( $1 + $2 + ZAPRET2_MARGIN_KB + DEPLOY_SLACK_KB )) ]; then
-        echo "ℹ Мало места в /tmp — staging будет на /opt"
-        DEPLOY_MODE=B
-    else
-        echo "ℹ Совсем мало места — установка без хранения архива"
-        DEPLOY_MODE=C
-    fi
-    return 0
-}
-
-tar_paths_ok() {
-    # члены архива не должны выбираться за пределы каталога распаковки
-    tar -tzf "$1" 2>/dev/null | while IFS= read -r entry; do
-        case "$entry" in
-            /*|../*|*/../*|*/..) exit 1 ;;
-        esac
-    done
-}
-
 verify_archive() {
     # $1 файл, $2 ожидаемый sha256 (может быть пустым); od есть не везде (OpenWrt),
     # gzip -t сам ловит и HTML-страницы ошибок, и битые архивы
@@ -786,197 +751,6 @@ verify_archive() {
         va_actual=$(sha256sum "$1" 2>/dev/null | awk '{print $1}')
         [ "$va_actual" = "$2" ] || { echo "✗ Контрольная сумма архива не совпала"; return 1; }
     fi
-    return 0
-}
-
-verify_staging_manifest() {
-    vsm_manifest="$1/extra_strats/cache/deploy/manifest.tsv"
-    [ -f "$vsm_manifest" ] || { echo "✗ В архиве нет манифеста — отказ разворачивать"; return 1; }
-    which sha256sum >/dev/null 2>&1 || { echo "⚠ sha256sum недоступен — сверка пропущена"; return 0; }
-    vsm_bad=0
-    while IFS='|' read -r vsm_path vsm_dest vsm_cls vsm_sha vsm_size vsm_exec; do
-        case "$vsm_path" in ""|'#'*) continue ;; esac
-        case "$vsm_path" in
-            /*|../*|*/../*|*/..)
-                echo "✗ Недопустимый путь в манифесте: $vsm_path"
-                return 1
-                ;;
-        esac
-        vsm_actual=$(sha256sum "$1/$vsm_path" 2>/dev/null | awk '{print $1}')
-        if [ "$vsm_actual" != "$vsm_sha" ]; then
-            echo "✗ Повреждён файл в архиве: $vsm_path"
-            vsm_bad=$((vsm_bad + 1))
-        fi
-    done < "$vsm_manifest"
-    [ "$vsm_bad" -eq 0 ] || { echo "✗ Сверка не пройдена ($vsm_bad файлов)"; return 1; }
-    echo "✓ Сверка архива пройдена"
-    return 0
-}
-
-staging_variant_name() {
-    if [ -f "$1/_root/z2r.sh" ] || [ -d "$1/z2r_lib" ]; then
-        if [ -e "$1/webui/run-webui.sh" ]; then printf full; else printf core; fi
-    else
-        printf webui
-    fi
-}
-
-merge_version_env() {
-    # $1 staging, $2 tracking (пусто = оставить прежний)
-    mve_src="$1/extra_strats/cache/deploy/version.env"
-    [ -f "$mve_src" ] || return 0
-    mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy"
-    if [ -f "$DEPLOY_VERSION_FILE" ] && [ "$(staging_variant_name "$1")" = "webui" ]; then
-        # webui-only: заменяем только поля Web-панели
-        mve_wver=$(read_env_value "$mve_src" WEBUI_VERSION)
-        mve_wdate=$(read_env_value "$mve_src" WEBUI_DATE)
-        mve_wsha=$(read_env_value "$mve_src" WEBUI_SHA)
-        cp -f "$DEPLOY_VERSION_FILE" "$DEPLOY_VERSION_FILE.tmp.$$" || return 0
-        sed -i "s/^WEBUI_VERSION=.*/WEBUI_VERSION=\"$mve_wver\"/; s/^WEBUI_DATE=.*/WEBUI_DATE=\"$mve_wdate\"/; s/^WEBUI_SHA=.*/WEBUI_SHA=\"$mve_wsha\"/" "$DEPLOY_VERSION_FILE.tmp.$$"
-        mv -f "$DEPLOY_VERSION_FILE.tmp.$$" "$DEPLOY_VERSION_FILE"
-    else
-        cp -f "$mve_src" "$DEPLOY_VERSION_FILE.tmp.$$" && mv -f "$DEPLOY_VERSION_FILE.tmp.$$" "$DEPLOY_VERSION_FILE"
-    fi
-    [ -z "$2" ] || sed -i "s/^TRACKING=.*/TRACKING=\"$2\"/" "$DEPLOY_VERSION_FILE" 2>/dev/null
-    return 0
-}
-
-install_manifest_files() {
-    # $1 staging с распакованным архивом, $2 tracking
-    imf_manifest="$1/extra_strats/cache/deploy/manifest.tsv"
-    imf_name=$(staging_variant_name "$1")
-    imf_installed=0
-    imf_kept=0
-    imf_z2r=0
-    imf_webui=0
-    while IFS='|' read -r imf_path imf_dest imf_cls imf_sha imf_size imf_exec; do
-        case "$imf_path" in ""|'#'*) continue ;; esac
-        case "$imf_path" in
-            /*|../*|*/../*|*/..)
-                echo "✗ Недопустимый путь в манифесте: $imf_path"
-                return 1
-                ;;
-        esac
-        case "$imf_dest" in
-            /opt/zator/*|/opt/z2r.sh) ;;
-            *)
-                echo "✗ Недопустимый dest в манифесте: $imf_dest"
-                return 1
-                ;;
-        esac
-        case "$imf_dest" in
-            /opt/z2r.sh) imf_dest="$INSTALL_DIR/z2r.sh" ;;
-            /opt/zator/*) imf_dest="$ZATOR_ROOT/${imf_dest#/opt/zator/}" ;;
-        esac
-        if [ "$imf_cls" = "keep-if-exists" ] && [ -e "$imf_dest" ]; then
-            imf_kept=$((imf_kept + 1))
-            continue
-        fi
-        mkdir -p "$(dirname "$imf_dest")" 2>/dev/null
-        rm -f "$imf_dest.tmp.$$"
-        if ! cp "$1/$imf_path" "$imf_dest.tmp.$$"; then
-            echo "✗ Не удалось установить $imf_dest"
-            return 1
-        fi
-        mv -f "$imf_dest.tmp.$$" "$imf_dest" || return 1
-        if [ "$imf_exec" = "1" ]; then chmod 755 "$imf_dest" 2>/dev/null; else chmod 644 "$imf_dest" 2>/dev/null; fi
-        [ "$imf_dest" = "$INSTALL_DIR/z2r.sh" ] && imf_z2r=1
-        case "$imf_dest" in "$ZATOR_ROOT"/webui/*) imf_webui=1 ;; esac
-        imf_installed=$((imf_installed + 1))
-    done < "$imf_manifest"
-    if [ -d "$ZATOR_ROOT/webui/www" ]; then
-        [ -L "$ZATOR_ROOT/webui/www/cgi-bin" ] || ln -sfn ../cgi-bin "$ZATOR_ROOT/webui/www/cgi-bin" 2>/dev/null
-    fi
-    if [ "$imf_webui" = 1 ] && [ -x /opt/bin/bash ]; then
-        sed -i "1s|^#!.*bash\$|#!/opt/bin/bash|" "$ZATOR_ROOT/webui/run-webui.sh" "$ZATOR_ROOT"/webui/cgi-bin/* 2>/dev/null
-    fi
-    if [ "$imf_webui" = 1 ] && [ -x "$ZATOR_ROOT/webui/run-webui.sh" ]; then
-        imf_stat=$("$ZATOR_ROOT/webui/run-webui.sh" status 2>/dev/null)
-        case "$imf_stat" in
-            running:*) "$ZATOR_ROOT/webui/run-webui.sh" restart >/dev/null 2>&1 && echo "✓ Web-панель перезапущена" ;;
-        esac
-    fi
-    merge_version_env "$1" "$2"
-    # раздельные манифесты по компонентам, как в lib/deploy.sh
-    if [ -f "$1/_root/z2r.sh" ] || [ -d "$1/z2r_lib" ]; then
-        awk -F'|' '$1 ~ /^#/ || $1 !~ /^webui\// {print}' "$imf_manifest" > "$ZATOR_ROOT/extra_strats/cache/deploy/manifest.core.tsv"
-    fi
-    if [ -e "$1/webui/run-webui.sh" ]; then
-        awk -F'|' '$1 ~ /^#/ || $1 ~ /^webui\// {print}' "$imf_manifest" > "$ZATOR_ROOT/extra_strats/cache/deploy/manifest.webui.tsv"
-    fi
-    rm -f "$ZATOR_ROOT/extra_strats/cache/deploy/manifest.full.tsv" "$ZATOR_ROOT/extra_strats/cache/deploy/manifest.full.json" 2>/dev/null
-    [ -f "$1/extra_strats/cache/deploy/manifest.json" ] && cp -f "$1/extra_strats/cache/deploy/manifest.json" "$ZATOR_ROOT/extra_strats/cache/deploy/manifest.$imf_name.json" 2>/dev/null
-    echo "✓ Установлено файлов: $imf_installed, сохранено пользовательских: $imf_kept"
-    [ "$imf_z2r" = 1 ] && echo "⚠ z2r.sh обновлён — перезапустите меню"
-    return 0
-}
-
-deploy_minimal() {
-    # $1 файл архива, $2 tracking; использует DEPLOY_MODE из ensure_space
-    dm_stage="/tmp/z2r_tar_stage_$$"
-    [ "$DEPLOY_MODE" = "B" ] && dm_stage="$ZATOR_ROOT/.deploy-staging.$$"
-    rm -rf "$dm_stage"
-    mkdir -p "$dm_stage" || return 1
-    if ! tar_paths_ok "$1"; then
-        rm -rf "$dm_stage"
-        echo "✗ Архив содержит небезопасные пути"
-        return 1
-    fi
-    if ! tar -xzf "$1" -C "$dm_stage" 2>/dev/null; then
-        rm -rf "$dm_stage"
-        echo "✗ Не удалось распаковать архив"
-        return 1
-    fi
-    if ! verify_staging_manifest "$dm_stage"; then
-        rm -rf "$dm_stage"
-        return 1
-    fi
-    if ! install_manifest_files "$dm_stage" "$2"; then
-        rm -rf "$dm_stage"
-        return 1
-    fi
-    rm -rf "$dm_stage"
-    return 0
-}
-
-fresh_stream_install() {
-    # $1 вариант; свежая установка без хранения архива на диске (режим C)
-    fsi_new="$ZATOR_ROOT.deploy.new.$$"
-    rm -rf "$fsi_new"
-    mkdir -p "$fsi_new" || return 1
-    echo "Скачиваю потоково zator-$1.tar.gz..."
-    if which curl >/dev/null 2>&1; then
-        curl -sS -L --max-time 300 "$RELEASES_BASE/latest/zator-$1.tar.gz" 2>/dev/null | tar -xz -C "$fsi_new"
-    else
-        wget -q -O - -T 300 "$RELEASES_BASE/latest/zator-$1.tar.gz" 2>/dev/null | tar -xz -C "$fsi_new"
-    fi
-    if ! verify_staging_manifest "$fsi_new"; then
-        rm -rf "$fsi_new"
-        return 1
-    fi
-    mkdir -p "$INSTALL_DIR" 2>/dev/null
-    if [ -f "$fsi_new/_root/z2r.sh" ]; then
-        cp "$fsi_new/_root/z2r.sh" "$INSTALL_DIR/z2r.sh.tmp.$$" \
-            && mv -f "$INSTALL_DIR/z2r.sh.tmp.$$" "$INSTALL_DIR/z2r.sh" \
-            && chmod 755 "$INSTALL_DIR/z2r.sh"
-        rm -rf "$fsi_new/_root"
-    fi
-    rm -rf "$ZATOR_ROOT"
-    if ! mv -f "$fsi_new" "$ZATOR_ROOT"; then
-        rm -rf "$fsi_new"
-        return 1
-    fi
-    if [ -d "$ZATOR_ROOT/_payload" ]; then
-        rm -rf "$ZATOR_ROOT/.deploy-payload"
-        mv -f "$ZATOR_ROOT/_payload" "$ZATOR_ROOT/.deploy-payload"
-    fi
-    if [ -d "$ZATOR_ROOT/webui/www" ]; then
-        [ -L "$ZATOR_ROOT/webui/www/cgi-bin" ] || ln -sfn ../cgi-bin "$ZATOR_ROOT/webui/www/cgi-bin" 2>/dev/null
-    fi
-    if [ -x /opt/bin/bash ] && [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]; then
-        sed -i "1s|^#!.*bash\$|#!/opt/bin/bash|" "$ZATOR_ROOT/webui/run-webui.sh" "$ZATOR_ROOT"/webui/cgi-bin/* 2>/dev/null
-    fi
-    echo "✓ zator установлен (потоково, без хранения архива)"
     return 0
 }
 
@@ -1006,33 +780,46 @@ launcher_variant() {
     fi
 }
 
-builtin_tar_deploy() {
-    # $1 вариант, $2 tag; встроенный путь, когда lib/deploy.sh ещё не установлен
-    btd_size=$(latest_asset_field "$1" size)
-    btd_unpacked=$(latest_asset_field "$1" unpackedSize)
-    if [ -z "$btd_size" ] || [ -z "$btd_unpacked" ]; then
-        echo "✗ Нет данных о размерах архива в latest.json"
+bootstrap_deploy_sh() {
+    # $1 файл архива: вытаскиваем единственный lib/deploy.sh — дальше
+    # развёртывание целиком делает он (staging A/B/C, манифест, version.env).
+    # deploy.sh — bash: на платформах без предустановленного bash ставим его.
+    ensure_bash || { echo "✗ lib/deploy.sh требует bash, установить не удалось"; return 1; }
+    bds_stage="/tmp/z2r_boot_$$"
+    rm -rf "$bds_stage"
+    mkdir -p "$bds_stage" || return 1
+    if ! tar -xzf "$1" -C "$bds_stage" z2r_lib/deploy.sh 2>/dev/null; then
+        rm -rf "$bds_stage"
+        echo "✗ В архиве нет z2r_lib/deploy.sh"
         return 1
     fi
-    ensure_space $(( (btd_size + 1023) / 1024 )) $(( btd_unpacked / 1024 + 1 )) || return 1
-    if [ "$DEPLOY_MODE" = "C" ]; then
-        echo "✗ Слишком мало места для встроенного развёртывания, а lib/deploy.sh отсутствует"
+    mkdir -p "$ZATOR_ROOT/z2r_lib" || { rm -rf "$bds_stage"; return 1; }
+    mv -f "$bds_stage/z2r_lib/deploy.sh" "$ZATOR_ROOT/z2r_lib/deploy.sh" || { rm -rf "$bds_stage"; return 1; }
+    chmod 755 "$ZATOR_ROOT/z2r_lib/deploy.sh" 2>/dev/null
+    rm -rf "$bds_stage"
+    have_deploy_sh
+}
+
+run_bootstrap_deploy() {
+    # $1 локальный файл архива, $2 вариант, $3 tag: вывод, выбор режима по
+    # месту и установку целиком делает lib/deploy.sh.
+    ZATOR_ROOT="$ZATOR_ROOT"     ZAPRET2_ROOT="${Z2R_ZAPRET2_ROOT:-/opt/zapret2}"     Z2R_SCRIPT_DEST="$INSTALL_DIR/z2r.sh"     Z2R_RELEASES_BASE="$RELEASES_BASE"         bash "$ZATOR_ROOT/z2r_lib/deploy.sh" from-tar "$1" "$2" "${3:-latest}"
+}
+
+# download_release_archive variant tag -> файл в /tmp, echo путь; пусто = сбой
+download_release_archive() {
+    dra_variant="$1"
+    dra_tag="${2:-latest}"
+    dra_arch="/tmp/z2r_deploy_$$.tar.gz"
+    if ! fetch_url "$dra_arch" "$RELEASES_BASE/$dra_tag/zator-$dra_variant.tar.gz" 300; then
+        rm -f "$dra_arch"
         return 1
     fi
-    btd_arch="/tmp/z2r_deploy_$$.tar.gz"
-    echo "Скачиваю zator-$1.tar.gz (релиз $2, ~$(( (btd_size + 1048575) / 1048576 )) МБ)..."
-    if ! fetch_url "$btd_arch" "$RELEASES_BASE/$2/zator-$1.tar.gz" 300; then
-        rm -f "$btd_arch"
+    if ! verify_archive "$dra_arch" "$(latest_asset_field "$dra_variant" sha256 2>/dev/null)"; then
+        rm -f "$dra_arch"
         return 1
     fi
-    if ! verify_archive "$btd_arch" "$(latest_asset_field "$1" sha256)"; then
-        rm -f "$btd_arch"
-        return 1
-    fi
-    deploy_minimal "$btd_arch" ""
-    btd_rc=$?
-    rm -f "$btd_arch"
-    return $btd_rc
+    printf '%s' "$dra_arch"
 }
 
 deploy_version() {
@@ -1043,18 +830,21 @@ deploy_version() {
             echo "ℹ Версия закреплена ($1): автообновление выключено, обновления вручную (z2r update или п.5 меню)."
             return 0
         fi
-        echo "⚠ lib/deploy.sh не справился, пробую встроенный путь"
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap из архива"
     fi
     rm -f "$LATEST_JSON"
     if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/$1/latest.json" 20; then
         echo "✗ Релиз $1 не найден."
         return 1
     fi
-    if builtin_tar_deploy "$(launcher_variant)" "$1"; then
+    dv_arch=$(download_release_archive "$(launcher_variant)" "$1") || return 1
+    if bootstrap_deploy_sh "$dv_arch" && run_bootstrap_deploy "$dv_arch" "$(launcher_variant)" "$1"; then
+        rm -f "$dv_arch"
         sed -i "s/^TRACKING=.*/TRACKING=\"$1\"/" "$DEPLOY_VERSION_FILE" 2>/dev/null
         echo "ℹ Версия закреплена ($1): автообновление выключено, обновления вручную (z2r update или п.5 меню)."
         return 0
     fi
+    rm -f "$dv_arch"
     return 1
 }
 
@@ -1070,10 +860,8 @@ deploy_local_tar() {
         return $?
     fi
     verify_archive "$1" "" || return 1
-    dlt_unpacked=$(gzip -l "$1" 2>/dev/null | awk 'NR==2 {print $2}')
-    ensure_space $(( ($(wc -c < "$1") + 1023) / 1024 )) $(( ${dlt_unpacked:-0} / 1024 + 1 )) || return 1
-    [ "$DEPLOY_MODE" != "C" ] || { echo "✗ Слишком мало места для встроенного развёртывания, а lib/deploy.sh отсутствует"; return 1; }
-    deploy_minimal "$1" ""
+    bootstrap_deploy_sh "$1" || return 1
+    run_bootstrap_deploy "$1" "$(launcher_variant)" ""
 }
 
 auto_tar_update() {
@@ -1094,9 +882,14 @@ auto_tar_update() {
         if run_deploy_sh "$RELEASES_BASE/latest/zator-$atu_variant.tar.gz" "$atu_variant" latest; then
             return 0
         fi
-        echo "⚠ lib/deploy.sh не справился, пробую встроенный путь"
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
     fi
-    builtin_tar_deploy "$atu_variant" latest
+    atu_arch=$(download_release_archive "$atu_variant" latest) || return 1
+    bootstrap_deploy_sh "$atu_arch" || { rm -f "$atu_arch"; return 1; }
+    run_bootstrap_deploy "$atu_arch" "$atu_variant" latest
+    atu_rc=$?
+    rm -f "$atu_arch"
+    return $atu_rc
 }
 
 migrate_tar_install() {
@@ -1108,14 +901,19 @@ migrate_tar_install() {
         if run_deploy_sh "$RELEASES_BASE/latest/zator-$mgi_variant.tar.gz" "$mgi_variant" latest; then
             return 0
         fi
-        echo "⚠ lib/deploy.sh не справился, пробую встроенный путь"
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
     fi
     rm -f "$LATEST_JSON"
     if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
         echo "⚠ Сервер релизов недоступен."
         return 1
     fi
-    builtin_tar_deploy "$mgi_variant" latest
+    mgi_arch=$(download_release_archive "$mgi_variant" latest) || return 1
+    bootstrap_deploy_sh "$mgi_arch" || { rm -f "$mgi_arch"; return 1; }
+    run_bootstrap_deploy "$mgi_arch" "$mgi_variant" latest
+    mgi_rc=$?
+    rm -f "$mgi_arch"
+    return $mgi_rc
 }
 
 fresh_tar_install() {
@@ -1152,24 +950,11 @@ fresh_tar_install() {
         esac
     fi
     ftv_size=$(latest_asset_field "$ftv_variant" size)
-    ftv_unpacked=$(latest_asset_field "$ftv_variant" unpackedSize)
     [ -n "$ftv_size" ] || { echo "✗ Нет данных о размере архива."; return 1; }
-    ensure_space $(( (ftv_size + 1023) / 1024 )) $(( ftv_unpacked / 1024 + 1 )) || return 2
-    if [ "$DEPLOY_MODE" = "C" ]; then
-        fresh_stream_install "$ftv_variant" && return 0
-        return 1
-    fi
-    ftv_arch="/tmp/z2r_deploy_$$.tar.gz"
     echo "Скачиваю zator-$ftv_variant.tar.gz (~$(( (ftv_size + 1048575) / 1048576 )) МБ)..."
-    if ! fetch_url "$ftv_arch" "$RELEASES_BASE/latest/zator-$ftv_variant.tar.gz" 300; then
-        rm -f "$ftv_arch"
-        return 1
-    fi
-    if ! verify_archive "$ftv_arch" "$(latest_asset_field "$ftv_variant" sha256)"; then
-        rm -f "$ftv_arch"
-        return 1
-    fi
-    deploy_minimal "$ftv_arch" "latest"
+    ftv_arch=$(download_release_archive "$ftv_variant" latest) || return 1
+    bootstrap_deploy_sh "$ftv_arch" || { rm -f "$ftv_arch"; return 1; }
+    run_bootstrap_deploy "$ftv_arch" "$ftv_variant" latest
     ftv_rc=$?
     rm -f "$ftv_arch"
     return $ftv_rc
