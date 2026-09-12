@@ -1,6 +1,17 @@
 #!/bin/sh
 
-INSTALL_DIR="/opt"
+# Основной путь обновления zator - tar-релизы GitHub (zator-{core,webui,full}.tar.gz,
+# собирает webui-src/scripts/pack-zator-tar.mjs). Развёртывание делегируется
+# /opt/zator/z2r_lib/deploy.sh. На свежей установке лаунчер делает только
+# bootstrap: скачать архив, проверить, вытащить lib/deploy.sh и передать
+# ему управление (место/staging/манифест/version.env — целиком deploy.sh,
+# дублей логики больше нет). Пофайловый raw-путь остаётся резервом:
+# -raw-update, недоступность релизов.
+# Флаги: -no-update, -raw-update, update, check, --variant=core|webui|full,
+#        --version=<релиз> (пин), --tar <файл>.
+
+# Z2R_INSTALL_DIR/Z2R_BIN_PATH/Z2R_RELEASES_URL — оверрайды для тестов песочницы
+INSTALL_DIR="${Z2R_INSTALL_DIR:-/opt}"
 Z2R_CONF="${INSTALL_DIR}/z2r.conf"
 DEFAULT_BRANCH="zator"
 DEFAULT_RAW_URL="https://raw.githubusercontent.com/AloofLibra/zator/${DEFAULT_BRANCH}"
@@ -15,6 +26,13 @@ LIB_FILES_FALLBACK="ui.sh provider.sh telemetry.sh recommendations.sh netcheck.s
 LIB_FILES_REQUIRED="config.sh orchestra_state.sh"
 MAX_DOWNLOAD_JOBS=3
 SHA_CACHE_DIR="${INSTALL_DIR}/zator/.z2r_sha_cache"
+ZATOR_ROOT="${INSTALL_DIR}/zator"
+DEPLOY_VERSION_FILE="$ZATOR_ROOT/extra_strats/cache/deploy/version.env"
+RELEASES_BASE="https://github.com/AloofLibra/zator/releases/download"
+RELEASES_URL_OVERRIDE="${Z2R_RELEASES_URL:-}"
+LATEST_JSON="/tmp/z2r_latest_$$.json"
+AUTOUPDATE="on"
+DEPLOY_VARIANT=""
 # Дополнительные аргументы curl для raw.githubusercontent.com.
 # Заполняется только после проверки IP через DoH; TLS-проверку не отключаем.
 RAW_DL_EXTRA_ARGS=""
@@ -39,12 +57,20 @@ load_conf() {
             esac
             ;;
     esac
+    conf_autoupdate=$(sed -n 's/^AUTOUPDATE=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
+    case "$conf_autoupdate" in
+        on|off) AUTOUPDATE="$conf_autoupdate" ;;
+    esac
+    conf_variant=$(sed -n 's/^DEPLOY_VARIANT=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
+    case "$conf_variant" in
+        core|webui|full) DEPLOY_VARIANT="$conf_variant" ;;
+    esac
 }
 
 save_conf() {
     mkdir -p "$INSTALL_DIR" 2>/dev/null
     conf_tmp="${Z2R_CONF}.tmp.$$"
-    if printf 'RAW_URL=%s\nBRANCH=%s\nINSTALLER_URL=%s\n' "$RAW_URL" "$BRANCH" "$INSTALLER_URL" > "$conf_tmp" 2>/dev/null; then
+    if printf 'RAW_URL=%s\nBRANCH=%s\nINSTALLER_URL=%s\nAUTOUPDATE=%s\nDEPLOY_VARIANT=%s\n' "$RAW_URL" "$BRANCH" "$INSTALLER_URL" "$AUTOUPDATE" "$DEPLOY_VARIANT" > "$conf_tmp" 2>/dev/null; then
         mv -f "$conf_tmp" "$Z2R_CONF" || rm -f "$conf_tmp"
     else
         rm -f "$conf_tmp"
@@ -59,6 +85,15 @@ derive_repo_endpoints() {
             repo_name=$(printf '%s' "$RAW_URL" | cut -d/ -f5)
             API_BASE_URL="https://api.github.com/repos/${repo_owner}/${repo_name}/contents"
             MIRROR_URL="https://git.px.rkn.quest/${repo_owner}/plain"
+            RELEASES_BASE="https://github.com/${repo_owner}/${repo_name}/releases/download"
+            [ -n "$RELEASES_URL_OVERRIDE" ] && RELEASES_BASE="$RELEASES_URL_OVERRIDE"
+            # зеркало из меню z2r (п.5 -> п.10): sources.env переживает деплои
+            if [ -z "$RELEASES_URL_OVERRIDE" ]; then
+                sources_mirror=$(sed -n 's/^RELEASES_MIRROR="//p' "$ZATOR_ROOT/extra_strats/cache/deploy/sources.env" 2>/dev/null | tr -d '\r' | tail -n 1 | sed 's/"$//')
+                case "$sources_mirror" in
+                    http://*|https://*) RELEASES_BASE="$sources_mirror" ;;
+                esac
+            fi
             # Конвенция форков: загрузчик лежит в репо <owner>/z2r (ветка z2r).
             if [ "$RAW_URL" != "$DEFAULT_RAW_URL" ] && [ "$INSTALLER_URL" = "$DEFAULT_INSTALLER_URL" ]; then
                 INSTALLER_URL="https://raw.githubusercontent.com/${repo_owner}/z2r/z2r/z2r"
@@ -73,6 +108,110 @@ derive_repo_endpoints() {
 }
 
 load_conf
+
+print_usage() {
+    echo "z2r - загрузчик и обновление zator"
+    echo ""
+    echo "Запуск без аргументов: проверка обновлений, автообновление при"
+    echo "наличии нового релиза и запуск меню z2r (z2r.sh)."
+    echo ""
+    echo "Использование: z2r [команда] [ключи] [URL репозитория]"
+    echo ""
+    echo "Команды:"
+    echo "  help     эта справка"
+    echo "  conf     показать конфиг и установленную версию"
+    echo "  update   обновить zator до последнего релиза сейчас"
+    echo "  check    только проверить обновления, ничего не качать"
+    echo "  default  вернуться к репозиторию автора, конфиг удаляется"
+    echo ""
+    echo "Ключи на текущий запуск, в конфиг не пишутся:"
+    echo "  -skip-update    пропустить обновление этим запуском"
+    echo "  -raw-update     обновиться пофайлово из ветки, старый режим,"
+    echo "                 только этот запуск"
+    echo "  --variant=V     какой архив качать этим запуском:"
+    echo "                 core | webui | full"
+    echo "  --tar ФАЙЛ     установить из локального tar.gz"
+    echo ""
+    echo "Источник релизов: стандартный GitHub, зеркало из меню z2r"
+    echo "(п.5 -> п.10, sources.env) или переменная Z2R_RELEASES_URL."
+    echo "Ключи с постоянным эффектом:"
+    echo "  -no-update      выключить автообновление насовсем:"
+    echo "                 пишет AUTOUPDATE=off в конфиг, ручное"
+    echo "                 обновление остаётся (update, меню п.5)"
+    echo "  -update         включить автообновление обратно:"
+    echo "                 пишет AUTOUPDATE=on в конфиг"
+    echo "  --version=TAG   поставить конкретный релиз и закрепить его:"
+    echo "                 автообновление выключится, пока не обновишь"
+    echo "                 вручную (update или меню п.5)"
+    echo ""
+    echo "URL репозитория — сохраняется в конфиг:"
+    echo "  https://raw.githubusercontent.com/<владелец>/<репо>/<ветка>"
+    echo "  Переключает устройство на выбранный репозиторий, релизы"
+    echo "  берутся из него же."
+    echo ""
+    echo "Конфиг $Z2R_CONF, постоянные ключи:"
+    echo "  RAW_URL         репозиторий, меняется командой с URL"
+    echo "  INSTALLER_URL   откуда обновляется сам загрузчик z2r;"
+    echo "                  задаётся вторым URL после репозитория"
+    echo "                  (для форков подставляется автоматически),"
+    echo "                  сбрасывается командой default"
+    echo "  AUTOUPDATE      on | off - ключи -no-update / -update"
+    echo "  DEPLOY_VARIANT  core | webui | full - постоянный вариант"
+    echo "                  архива вместо автоопределения, пишется"
+    echo "                  только вручную"
+}
+
+show_conf() {
+    echo "Конфиг: $Z2R_CONF"
+    if [ -f "$Z2R_CONF" ]; then
+        echo "---"
+        cat "$Z2R_CONF"
+        echo "---"
+    else
+        echo "файл не найден, используются значения по умолчанию"
+    fi
+    echo ""
+    echo "Репозиторий:    $RAW_URL"
+    echo "Загрузчик:      $INSTALLER_URL"
+    echo "Автообновление: $AUTOUPDATE"
+    echo "Вариант архива: ${DEPLOY_VARIANT:-auto}"
+    if [ -f "$DEPLOY_VERSION_FILE" ]; then
+        echo ""
+        echo "Установлено:"
+        grep -E '^(ZATOR_VERSION|ZATOR_DATE|WEBUI_VERSION|WEBUI_DATE|TRACKING)=' "$DEPLOY_VERSION_FILE"
+    fi
+}
+
+# Флаги развёртывания разбираем до первого позиционного аргумента (URL/default).
+NO_UPDATE=0
+RAW_UPDATE=0
+CMD_UPDATE=0
+CMD_CHECK=0
+PERSIST_AUTOUPDATE_ON=0
+DEPLOY_VARIANT_ARG=""
+DEPLOY_VERSION_ARG=""
+LOCAL_TAR=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        help|-h|--help) print_usage; exit 0 ;;
+        conf|config) show_conf; exit 0 ;;
+        -skip-update) NO_UPDATE=1; shift ;;
+        -no-update) NO_UPDATE=1; AUTOUPDATE="off"; PERSIST_AUTOUPDATE=1; shift ;;
+        -update) AUTOUPDATE="on"; PERSIST_AUTOUPDATE_ON=1; shift ;;
+        -raw-update) RAW_UPDATE=1; shift ;;
+        update) CMD_UPDATE=1; shift ;;
+        check) CMD_CHECK=1; shift ;;
+        --variant=core|--variant=webui|--variant=full) DEPLOY_VARIANT_ARG="${1#--variant=}"; shift ;;
+        --version=*) DEPLOY_VERSION_ARG="${1#--version=}"; shift ;;
+        --tar)
+            [ $# -ge 2 ] || { echo "Ошибка: --tar требует путь к файлу"; exit 1; }
+            LOCAL_TAR="$2"
+            shift 2
+            ;;
+        -*) echo "⚠ Неизвестный флаг: $1 (игнорируется, справка: z2r help)"; shift ;;
+        *) break ;;
+    esac
+done
 
 URL_ARGS_GIVEN=0
 case "${1:-}" in
@@ -137,15 +276,18 @@ fi
 [ "$RAW_URL" = "$DEFAULT_RAW_URL" ] || echo "Кастомный репозиторий: $RAW_URL (ветка: $BRANCH), загрузчик: $INSTALLER_URL"
 
 # Определение пути для команды z2r
-if [ -d /opt/bin ]; then
-    BIN_PATH="/opt/bin/z2r"
-elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-    BIN_PATH="/usr/local/bin/z2r"
-elif [ -d /usr/bin ] && [ -w /usr/bin ]; then
-    BIN_PATH="/usr/bin/z2r"
-else
-    echo "Ошибка: не найдено подходящее место для установки"
-    exit 1
+BIN_PATH="${Z2R_BIN_PATH:-}"
+if [ -z "$BIN_PATH" ]; then
+    if [ -d /opt/bin ]; then
+        BIN_PATH="/opt/bin/z2r"
+    elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+        BIN_PATH="/usr/local/bin/z2r"
+    elif [ -d /usr/bin ] && [ -w /usr/bin ]; then
+        BIN_PATH="/usr/bin/z2r"
+    else
+        echo "Ошибка: не найдено подходящее место для установки"
+        exit 1
+    fi
 fi
 
 # Проверка прав root для стандартных систем
@@ -514,6 +656,310 @@ download_installer() {
     download_url "$1" "$INSTALLER_MIRROR_URL" "" && valid_script_file "$1"
 }
 
+# --- Развёртывание из tar-релизов ---
+
+free_kb() {
+    df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+read_env_value() {
+    [ -f "$1" ] || return 1
+    env_line=$(grep "^$2=" "$1" 2>/dev/null | head -n 1)
+    env_line=${env_line#*=}
+    env_line=${env_line#\"}
+    printf '%s' "${env_line%\"}"
+}
+
+zator_installed() {
+    [ -f "$ZATOR_ROOT/z2r_lib/config.sh" ] || [ -f "$DEPLOY_VERSION_FILE" ]
+}
+
+webui_installed() {
+    [ -e "$ZATOR_ROOT/webui/run-webui.sh" ]
+}
+
+fetch_url() {
+    # $1 dest, $2 url, $3 таймаут (сек); пиннинг raw-хоста тут не нужен
+    if which curl >/dev/null 2>&1; then
+        curl -fsS -L -o "$1" --max-time "${3:-60}" "$2" 2>/dev/null
+        return $?
+    fi
+    wget -q -O "$1" -T "${3:-60}" "$2" 2>/dev/null
+}
+
+latest_json_str() {
+    sed -n "s/^.*\"$1\": *\"\([^\"]*\)\".*$/\1/p" "$LATEST_JSON" 2>/dev/null | head -n 1
+}
+
+latest_asset_field() {
+    # $1 вариант (core|webui|full), $2 поле ассета (size|sha256|unpackedSize)
+    awk -v v="\"$1\":" 'index($0, v) > 0 { inb = 1; next } inb && index($0, "}") > 0 { exit } inb { print }' "$LATEST_JSON" 2>/dev/null \
+        | sed -n "s/^.*\"$2\": *\"\([^\"]*\)\".*$/\1/p" | head -n 1
+    awk -v v="\"$1\":" 'index($0, v) > 0 { inb = 1; next } inb && index($0, "}") > 0 { exit } inb { print }' "$LATEST_JSON" 2>/dev/null \
+        | sed -n "s/^.*\"$2\": *\([0-9][0-9]*\).*$/\1/p" | head -n 1
+}
+
+write_latest_env() {
+    # файл-флаг для меню z2r и Web-панели: какая сборка на сервере
+    mkdir -p "$ZATOR_ROOT/extra_strats/cache/deploy" 2>/dev/null || return 0
+    latest_env="$ZATOR_ROOT/extra_strats/cache/deploy/latest.env"
+    {
+        printf 'LATEST_RELEASE="%s"\n' "$(latest_json_str release)"
+        printf 'LATEST_BUILD_DATE="%s"\n' "$(latest_json_str buildDate)"
+        printf 'LATEST_ZATOR_DATE="%s"\n' "$(latest_json_str zatorDate)"
+        printf 'LATEST_WEBUI_DATE="%s"\n' "$(latest_json_str webuiDate)"
+        printf 'LATEST_ZATOR_SHA="%s"\n' "$(latest_json_str zatorSha)"
+        printf 'LATEST_WEBUI_SHA="%s"\n' "$(latest_json_str webuiSha)"
+        printf 'LATEST_CHECKED_AT="%s"\n' "$(date -u '+%Y-%m-%d %H:%M' 2>/dev/null)"
+    } > "${latest_env}.tmp.$$" 2>/dev/null && mv -f "${latest_env}.tmp.$$" "$latest_env" 2>/dev/null
+    return 0
+}
+
+check_updates() {
+    UPDATE_ZATOR=0
+    UPDATE_WEBUI=0
+    rm -f "$LATEST_JSON"
+    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
+        echo "⚠ Не достучались до сервера обновлений."
+        return 1
+    fi
+    lz_sha=$(latest_json_str zatorSha)
+    lw_sha=$(latest_json_str webuiSha)
+    z_sha=$(read_env_value "$DEPLOY_VERSION_FILE" ZATOR_SHA)
+    w_sha=$(read_env_value "$DEPLOY_VERSION_FILE" WEBUI_SHA)
+    [ -n "$z_sha" ] && [ -n "$lz_sha" ] && [ "$z_sha" != "$lz_sha" ] && UPDATE_ZATOR=1
+    # без установленной панели обновлять нечего: WEBUI_SHA есть в version.env
+    # даже на core-установках (общая сборка)
+    webui_installed && [ -n "$w_sha" ] && [ -n "$lw_sha" ] && [ "$w_sha" != "$lw_sha" ] && UPDATE_WEBUI=1
+    write_latest_env
+    if [ "$UPDATE_ZATOR" = 1 ] || [ "$UPDATE_WEBUI" = 1 ]; then
+        update_note="⬆ Есть обновление:"
+        [ "$UPDATE_ZATOR" = 1 ] && update_note="$update_note zator от $(latest_json_str zatorDate)"
+        [ "$UPDATE_WEBUI" = 1 ] && update_note="$update_note, Web-панель от $(latest_json_str webuiDate)"
+        echo "$update_note"
+    else
+        echo "✓ Обновлений нет (релиз $(latest_json_str release))."
+    fi
+    return 0
+}
+
+verify_archive() {
+    # $1 файл, $2 ожидаемый sha256 (может быть пустым); od есть не везде (OpenWrt),
+    # gzip -t сам ловит и HTML-страницы ошибок, и битые архивы
+    gzip -t "$1" 2>/dev/null || { echo "✗ Файл не является gzip-архивом или повреждён: $1"; return 1; }
+    if [ -n "$2" ] && which sha256sum >/dev/null 2>&1; then
+        va_actual=$(sha256sum "$1" 2>/dev/null | awk '{print $1}')
+        [ "$va_actual" = "$2" ] || { echo "✗ Контрольная сумма архива не совпала"; return 1; }
+    fi
+    return 0
+}
+
+have_deploy_sh() {
+    [ -f "$ZATOR_ROOT/z2r_lib/deploy.sh" ] && which bash >/dev/null 2>&1
+}
+
+run_deploy_sh() {
+    # $1 url архива, $2 вариант, $3 tag; вывод и проверки делает deploy.sh.
+    # Корни обязательны в env: standalone deploy.sh иначе уходит в /opt по умолчанию.
+    ZATOR_ROOT="$ZATOR_ROOT" \
+    ZAPRET2_ROOT="${Z2R_ZAPRET2_ROOT:-/opt/zapret2}" \
+    Z2R_SCRIPT_DEST="$INSTALL_DIR/z2r.sh" \
+    Z2R_RELEASES_BASE="$RELEASES_BASE" \
+        bash "$ZATOR_ROOT/z2r_lib/deploy.sh" from-tar "$1" "$2" "$3"
+}
+
+launcher_variant() {
+    if [ -n "$DEPLOY_VARIANT_ARG" ]; then
+        printf '%s' "$DEPLOY_VARIANT_ARG"
+    elif [ -n "$DEPLOY_VARIANT" ]; then
+        printf '%s' "$DEPLOY_VARIANT"
+    elif webui_installed; then
+        printf full
+    else
+        printf core
+    fi
+}
+
+bootstrap_deploy_sh() {
+    # $1 файл архива: вытаскиваем единственный lib/deploy.sh — дальше
+    # развёртывание целиком делает он (staging A/B/C, манифест, version.env).
+    # deploy.sh — bash: на платформах без предустановленного bash ставим его.
+    ensure_bash || { echo "✗ lib/deploy.sh требует bash, установить не удалось"; return 1; }
+    bds_stage="/tmp/z2r_boot_$$"
+    rm -rf "$bds_stage"
+    mkdir -p "$bds_stage" || return 1
+    if ! tar -xzf "$1" -C "$bds_stage" z2r_lib/deploy.sh 2>/dev/null; then
+        rm -rf "$bds_stage"
+        echo "✗ В архиве нет z2r_lib/deploy.sh"
+        return 1
+    fi
+    mkdir -p "$ZATOR_ROOT/z2r_lib" || { rm -rf "$bds_stage"; return 1; }
+    mv -f "$bds_stage/z2r_lib/deploy.sh" "$ZATOR_ROOT/z2r_lib/deploy.sh" || { rm -rf "$bds_stage"; return 1; }
+    chmod 755 "$ZATOR_ROOT/z2r_lib/deploy.sh" 2>/dev/null
+    rm -rf "$bds_stage"
+    have_deploy_sh
+}
+
+run_bootstrap_deploy() {
+    # $1 локальный файл архива, $2 вариант, $3 tag: вывод, выбор режима по
+    # месту и установку целиком делает lib/deploy.sh.
+    ZATOR_ROOT="$ZATOR_ROOT"     ZAPRET2_ROOT="${Z2R_ZAPRET2_ROOT:-/opt/zapret2}"     Z2R_SCRIPT_DEST="$INSTALL_DIR/z2r.sh"     Z2R_RELEASES_BASE="$RELEASES_BASE"         bash "$ZATOR_ROOT/z2r_lib/deploy.sh" from-tar "$1" "$2" "${3:-latest}"
+}
+
+# download_release_archive variant tag -> файл в /tmp, echo путь; пусто = сбой
+download_release_archive() {
+    dra_variant="$1"
+    dra_tag="${2:-latest}"
+    dra_arch="/tmp/z2r_deploy_$$.tar.gz"
+    if ! fetch_url "$dra_arch" "$RELEASES_BASE/$dra_tag/zator-$dra_variant.tar.gz" 300; then
+        rm -f "$dra_arch"
+        return 1
+    fi
+    if ! verify_archive "$dra_arch" "$(latest_asset_field "$dra_variant" sha256 2>/dev/null)"; then
+        rm -f "$dra_arch"
+        return 1
+    fi
+    printf '%s' "$dra_arch"
+}
+
+deploy_version() {
+    # $1 номер релиза: установка конкретной версии и закрепление (пин)
+    echo "=== Установка релиза $1 ==="
+    if have_deploy_sh; then
+        if run_deploy_sh "$RELEASES_BASE/$1/zator-$(launcher_variant).tar.gz" "$(launcher_variant)" "$1"; then
+            echo "ℹ Версия закреплена ($1): автообновление выключено, обновления вручную (z2r update или п.5 меню)."
+            return 0
+        fi
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap из архива"
+    fi
+    rm -f "$LATEST_JSON"
+    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/$1/latest.json" 20; then
+        echo "✗ Релиз $1 не найден."
+        return 1
+    fi
+    dv_arch=$(download_release_archive "$(launcher_variant)" "$1") || return 1
+    if bootstrap_deploy_sh "$dv_arch" && run_bootstrap_deploy "$dv_arch" "$(launcher_variant)" "$1"; then
+        rm -f "$dv_arch"
+        sed -i "s/^TRACKING=.*/TRACKING=\"$1\"/" "$DEPLOY_VERSION_FILE" 2>/dev/null
+        echo "ℹ Версия закреплена ($1): автообновление выключено, обновления вручную (z2r update или п.5 меню)."
+        return 0
+    fi
+    rm -f "$dv_arch"
+    return 1
+}
+
+deploy_local_tar() {
+    # $1 путь к локальному архиву
+    if [ ! -f "$1" ]; then
+        echo "✗ Файл не найден: $1"
+        return 1
+    fi
+    echo "=== Развёртывание из локального архива $1 ==="
+    if have_deploy_sh; then
+        run_deploy_sh "$1" "" ""
+        return $?
+    fi
+    verify_archive "$1" "" || return 1
+    bootstrap_deploy_sh "$1" || return 1
+    run_bootstrap_deploy "$1" "$(launcher_variant)" ""
+}
+
+auto_tar_update() {
+    # умный выбор варианта: устарел только webui и он установлен -> webui
+    if [ -n "$DEPLOY_VARIANT_ARG" ]; then
+        atu_variant="$DEPLOY_VARIANT_ARG"
+    elif [ -n "$DEPLOY_VARIANT" ]; then
+        atu_variant="$DEPLOY_VARIANT"
+    elif [ "$UPDATE_ZATOR" = 1 ]; then
+        webui_installed && atu_variant=full || atu_variant=core
+    elif webui_installed; then
+        atu_variant=webui
+    else
+        atu_variant=core
+    fi
+    echo "=== Обновление zator из релиза ($atu_variant) ==="
+    if have_deploy_sh; then
+        if run_deploy_sh "$RELEASES_BASE/latest/zator-$atu_variant.tar.gz" "$atu_variant" latest; then
+            return 0
+        fi
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
+    fi
+    atu_arch=$(download_release_archive "$atu_variant" latest) || return 1
+    bootstrap_deploy_sh "$atu_arch" || { rm -f "$atu_arch"; return 1; }
+    run_bootstrap_deploy "$atu_arch" "$atu_variant" latest
+    atu_rc=$?
+    rm -f "$atu_arch"
+    return $atu_rc
+}
+
+migrate_tar_install() {
+    # старая пофайловая установка без version.env: первый tar-деплой поверх
+    # неё, пользовательские файлы защищены классом keep-if-exists
+    mgi_variant="$(launcher_variant)"
+    echo "Установка ведётся пофайлово из ветки. Перехожу на релизные архивы ($mgi_variant)..."
+    if have_deploy_sh; then
+        if run_deploy_sh "$RELEASES_BASE/latest/zator-$mgi_variant.tar.gz" "$mgi_variant" latest; then
+            return 0
+        fi
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
+    fi
+    rm -f "$LATEST_JSON"
+    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
+        echo "⚠ Сервер релизов недоступен."
+        return 1
+    fi
+    mgi_arch=$(download_release_archive "$mgi_variant" latest) || return 1
+    bootstrap_deploy_sh "$mgi_arch" || { rm -f "$mgi_arch"; return 1; }
+    run_bootstrap_deploy "$mgi_arch" "$mgi_variant" latest
+    mgi_rc=$?
+    rm -f "$mgi_arch"
+    return $mgi_rc
+}
+
+fresh_tar_install() {
+    # rc: 0 — установлено, 1 — сбой (можно фолбэк на raw), 2 — нельзя ставить (место)
+    echo "=== Установка zator с нуля ==="
+    rm -f "$LATEST_JSON"
+    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
+        echo "⚠ Сервер релизов недоступен."
+        return 1
+    fi
+    ftv_full=$(latest_asset_field full size)
+    ftv_core=$(latest_asset_field core size)
+    ftv_full_mb=$(( (ftv_full + 1048575) / 1048576 ))
+    ftv_core_mb=$(( (ftv_core + 1048575) / 1048576 ))
+    if [ -n "$DEPLOY_VARIANT_ARG" ]; then
+        ftv_variant="$DEPLOY_VARIANT_ARG"
+    elif [ -n "$DEPLOY_VARIANT" ]; then
+        ftv_variant="$DEPLOY_VARIANT"
+    else
+        ftv_choice=2
+        if [ -c /dev/tty ]; then
+            echo ""
+            echo "Установить Web-панель управления?"
+            echo "  1 - да, с панелью (full, ~${ftv_full_mb} МБ)"
+            echo "  2 - нет, только ядро (core, ~${ftv_core_mb} МБ)"
+            printf "Ваш выбор [2]: "
+            read -r ftv_choice < /dev/tty 2>/dev/null || ftv_choice=2
+        else
+            echo "ℹ Без терминала — ставлю core (Web-панель можно добавить позже: п.14 меню)"
+        fi
+        case "$ftv_choice" in
+            1) ftv_variant=full ;;
+            *) ftv_variant=core ;;
+        esac
+    fi
+    ftv_size=$(latest_asset_field "$ftv_variant" size)
+    [ -n "$ftv_size" ] || { echo "✗ Нет данных о размере архива."; return 1; }
+    echo "Скачиваю zator-$ftv_variant.tar.gz (~$(( (ftv_size + 1048575) / 1048576 )) МБ)..."
+    ftv_arch=$(download_release_archive "$ftv_variant" latest) || return 1
+    bootstrap_deploy_sh "$ftv_arch" || { rm -f "$ftv_arch"; return 1; }
+    run_bootstrap_deploy "$ftv_arch" "$ftv_variant" latest
+    ftv_rc=$?
+    rm -f "$ftv_arch"
+    return $ftv_rc
+}
+
 verify_repo_branch() {
     [ -n "$API_BASE_URL" ] || return 0
     which curl >/dev/null 2>&1 || return 0
@@ -583,7 +1029,12 @@ cleanup_update_temps() {
 }
 
 run_old_z2r() {
-    echo "Запускаю старую версию z2r.sh..."
+    # Z2R_NO_EXEC=1 — тестовый хук: развернуть и выйти, не запуская z2r.sh
+    if [ "${Z2R_NO_EXEC:-0}" = "1" ]; then
+        echo "ℹ Z2R_NO_EXEC=1: запуск z2r.sh пропущен"
+        exit 0
+    fi
+    echo "Запускаю z2r.sh..."
     cd "${INSTALL_DIR}" || exit 1
 
     if ensure_bash && which bash >/dev/null 2>&1; then
@@ -636,6 +1087,17 @@ if [ "$URL_ARGS_GIVEN" -eq 1 ]; then
     echo "✓ Сохранено в $Z2R_CONF, сброс: z2r default"
 fi
 
+if [ "$PERSIST_AUTOUPDATE" = 1 ]; then
+    [ "$URL_ARGS_GIVEN" -eq 1 ] || save_conf
+    echo "✓ Автообновление выключено насовсем: AUTOUPDATE=off в $Z2R_CONF"
+    echo "  Ручное обновление остаётся: z2r update или меню п.5"
+fi
+
+if [ "$PERSIST_AUTOUPDATE_ON" = 1 ]; then
+    [ "$URL_ARGS_GIVEN" -eq 1 ] || save_conf
+    echo "✓ Автообновление включено: AUTOUPDATE=on в $Z2R_CONF"
+fi
+
 # Если запущен из установленной команды - проверяем обновления
 if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
     echo "Проверка обновлений установщика..."
@@ -669,6 +1131,54 @@ else
     fi
     echo ""
 fi
+
+# --- Главное дерево развёртывания ---
+# Основной путь — tar-релизы; raw-пофайловый остаётся резервом (сбой сети/релизов,
+# -raw-update, староверы). Порядок: локальный файл > пин-версия > свежая установка >
+# проверка/автообновление.
+TAR_FLOW_DONE=0
+TAR_FLOW_SKIP=0
+if [ "$RAW_UPDATE" = 1 ]; then
+    echo "ℹ Режим -raw-update: пофайловое обновление из ветки $BRANCH"
+elif [ -n "$LOCAL_TAR" ]; then
+    deploy_local_tar "$LOCAL_TAR" && TAR_FLOW_DONE=1
+elif [ -n "$DEPLOY_VERSION_ARG" ]; then
+    deploy_version "$DEPLOY_VERSION_ARG" && TAR_FLOW_DONE=1
+elif ! zator_installed; then
+    fresh_tar_install
+    case $? in
+        0) TAR_FLOW_DONE=1 ;;
+        2) exit 1 ;;
+    esac
+elif [ ! -f "$DEPLOY_VERSION_FILE" ]; then
+    migrate_tar_install && TAR_FLOW_DONE=1
+elif check_updates; then
+    # сервер доступен: независимо от вердикта raw-фолбэк не нужен
+    TRACKING_NOW=$(read_env_value "$DEPLOY_VERSION_FILE" TRACKING)
+    if [ "$CMD_CHECK" = 1 ]; then
+        : # только проверка, ничего не качаем
+    elif [ "$NO_UPDATE" = 1 ]; then
+        : # уведомление уже напечатано check_updates
+    elif [ "$CMD_UPDATE" = 1 ]; then
+        auto_tar_update && TAR_FLOW_DONE=1
+    elif [ "$AUTOUPDATE" = "off" ]; then
+        echo "ℹ Автообновление выключено (AUTOUPDATE=off в $Z2R_CONF). Ручное: z2r update или п.5 меню."
+    elif [ -n "$TRACKING_NOW" ] && [ "$TRACKING_NOW" != "latest" ]; then
+        echo "ℹ Версия закреплена ($TRACKING_NOW), автообновление выключено. Ручное: z2r update или п.5 меню."
+    elif [ "$UPDATE_ZATOR" = 1 ] || [ "$UPDATE_WEBUI" = 1 ]; then
+        auto_tar_update && TAR_FLOW_DONE=1
+    fi
+    TAR_FLOW_SKIP=1
+fi
+rm -f "$LATEST_JSON" 2>/dev/null
+
+if [ "$TAR_FLOW_DONE" = 1 ]; then
+    echo ""
+elif [ "$TAR_FLOW_SKIP" = 1 ] && [ -f "${INSTALL_DIR}/z2r.sh" ]; then
+    :
+elif { [ "$NO_UPDATE" = 1 ] || [ "$CMD_CHECK" = 1 ]; } && zator_installed && [ -f "${INSTALL_DIR}/z2r.sh" ]; then
+    echo "ℹ Файлы zator не тронуты."
+else
 
 echo "=== Обновление zator ==="
 mkdir -p "${INSTALL_DIR}/zator/z2r_lib"
@@ -775,7 +1285,7 @@ cleanup_update_temps
 echo "✓ Оркестратор и locked.lua загружены"
 echo ""
 
-echo "? extra_strats list.txt загружены"
-echo ""
+fi
+
 echo "=== Запуск z2r.sh ==="
 run_old_z2r "$@"
