@@ -8,9 +8,10 @@
 # дублей логики больше нет). Пофайловый raw-путь остаётся резервом:
 # -raw-update, недоступность релизов.
 # Флаги: -no-update, -raw-update, update, check, --variant=core|webui|full,
-#        --version=<релиз> (пин), --tar <файл>.
+#        --version=<релиз> (пин), --tar <файл>, --force (принудительная
+#        установка свежего релиза), --beta (разрешить бета-релизы).
 
-# Z2R_INSTALL_DIR/Z2R_BIN_PATH/Z2R_RELEASES_URL — оверрайды для тестов песочницы
+# Z2R_INSTALL_DIR/Z2R_BIN_PATH/Z2R_RELEASES_URL/Z2R_RELEASES_API — оверрайды для тестов песочницы
 INSTALL_DIR="${Z2R_INSTALL_DIR:-/opt}"
 Z2R_CONF="${INSTALL_DIR}/z2r.conf"
 DEFAULT_BRANCH="zator"
@@ -30,8 +31,10 @@ ZATOR_ROOT="${INSTALL_DIR}/zator"
 DEPLOY_VERSION_FILE="$ZATOR_ROOT/extra_strats/cache/deploy/version.env"
 RELEASES_BASE="https://github.com/AloofLibra/zator/releases/download"
 RELEASES_URL_OVERRIDE="${Z2R_RELEASES_URL:-}"
+RELEASES_API_OVERRIDE="${Z2R_RELEASES_API:-}"
 LATEST_JSON="/tmp/z2r_latest_$$.json"
 AUTOUPDATE="on"
+CHANNEL="stable"
 DEPLOY_VARIANT=""
 # Дополнительные аргументы curl для raw.githubusercontent.com.
 # Заполняется только после проверки IP через DoH; TLS-проверку не отключаем.
@@ -65,12 +68,16 @@ load_conf() {
     case "$conf_variant" in
         core|webui|full) DEPLOY_VARIANT="$conf_variant" ;;
     esac
+    conf_channel=$(sed -n 's/^CHANNEL=//p' "$Z2R_CONF" 2>/dev/null | tr -d '\r' | tail -n 1)
+    case "$conf_channel" in
+        beta) CHANNEL="beta" ;;
+    esac
 }
 
 save_conf() {
     mkdir -p "$INSTALL_DIR" 2>/dev/null
     conf_tmp="${Z2R_CONF}.tmp.$$"
-    if printf 'RAW_URL=%s\nBRANCH=%s\nINSTALLER_URL=%s\nAUTOUPDATE=%s\nDEPLOY_VARIANT=%s\n' "$RAW_URL" "$BRANCH" "$INSTALLER_URL" "$AUTOUPDATE" "$DEPLOY_VARIANT" > "$conf_tmp" 2>/dev/null; then
+    if printf 'RAW_URL=%s\nBRANCH=%s\nINSTALLER_URL=%s\nAUTOUPDATE=%s\nCHANNEL=%s\nDEPLOY_VARIANT=%s\n' "$RAW_URL" "$BRANCH" "$INSTALLER_URL" "$AUTOUPDATE" "$CHANNEL" "$DEPLOY_VARIANT" > "$conf_tmp" 2>/dev/null; then
         mv -f "$conf_tmp" "$Z2R_CONF" || rm -f "$conf_tmp"
     else
         rm -f "$conf_tmp"
@@ -131,15 +138,31 @@ print_usage() {
     echo "  --variant=V     какой архив качать этим запуском:"
     echo "                 core | webui | full"
     echo "  --tar ФАЙЛ     установить из локального tar.gz"
+    echo "  --force         принудительно поставить самый свежий релиз"
+    echo "                 канала, не сверяясь с установленной версией."
+    echo "                 Чинит установку без version.env, с непомеченной"
+    echo "                 версией, закреплённой старой или только web-панелью"
+    echo "  --beta          разрешить бета-релизы этим запуском; без ключа"
+    echo "                 ставятся только стабильные"
     echo ""
     echo "Источник релизов: стандартный GitHub, зеркало из меню z2r"
     echo "(п.5 -> п.10, sources.env) или переменная Z2R_RELEASES_URL."
+    echo "Каналы: бета — релиз с \"beta\" в имени в любом регистре. Обычные"
+    echo "запуск и автообновление ставят только стабильные релизы; если"
+    echo "движущийся latest оказался бетой, берётся свежий номерной"
+    echo "стабильный релиз. Бета ставится только явно (--beta)."
     echo "Ключи с постоянным эффектом:"
     echo "  -no-update      выключить автообновление насовсем:"
     echo "                 пишет AUTOUPDATE=off в конфиг, ручное"
     echo "                 обновление остаётся (update, меню п.5)"
     echo "  -update         включить автообновление обратно:"
     echo "                 пишет AUTOUPDATE=on в конфиг"
+    echo "  -beta           включить бета-канал насовсем (для тестов):"
+    echo "                 пишет CHANNEL=beta в конфиг, обновления"
+    echo "                 ставят и бета-релизы; --beta — только на"
+    echo "                 один запуск"
+    echo "  -stable         вернуться на стабильный канал:"
+    echo "                 пишет CHANNEL=stable в конфиг"
     echo "  --version=TAG   поставить конкретный релиз и закрепить его:"
     echo "                 автообновление выключится, пока не обновишь"
     echo "                 вручную (update или меню п.5)"
@@ -156,6 +179,8 @@ print_usage() {
     echo "                  (для форков подставляется автоматически),"
     echo "                  сбрасывается командой default"
     echo "  AUTOUPDATE      on | off - ключи -no-update / -update"
+    echo "  CHANNEL         stable | beta - ключи -stable / -beta;"
+    echo "                  бета-канал ставит и бета-релизы (тесты)"
     echo "  DEPLOY_VARIANT  core | webui | full - постоянный вариант"
     echo "                  архива вместо автоопределения, пишется"
     echo "                  только вручную"
@@ -174,6 +199,7 @@ show_conf() {
     echo "Репозиторий:    $RAW_URL"
     echo "Загрузчик:      $INSTALLER_URL"
     echo "Автообновление: $AUTOUPDATE"
+    echo "Канал релизов:  ${CHANNEL}"
     echo "Вариант архива: ${DEPLOY_VARIANT:-auto}"
     if [ -f "$DEPLOY_VERSION_FILE" ]; then
         echo ""
@@ -188,6 +214,10 @@ RAW_UPDATE=0
 CMD_UPDATE=0
 CMD_CHECK=0
 PERSIST_AUTOUPDATE_ON=0
+PERSIST_CHANNEL=0
+FORCE_UPDATE=0
+BETA_ALLOWED=0
+[ "$CHANNEL" = "beta" ] && BETA_ALLOWED=1
 DEPLOY_VARIANT_ARG=""
 DEPLOY_VERSION_ARG=""
 LOCAL_TAR=""
@@ -199,6 +229,10 @@ while [ $# -gt 0 ]; do
         -no-update) NO_UPDATE=1; AUTOUPDATE="off"; PERSIST_AUTOUPDATE=1; shift ;;
         -update) AUTOUPDATE="on"; PERSIST_AUTOUPDATE_ON=1; shift ;;
         -raw-update) RAW_UPDATE=1; shift ;;
+        --force|-force) FORCE_UPDATE=1; CMD_UPDATE=1; shift ;;
+        --beta) BETA_ALLOWED=1; shift ;;
+        -beta) CHANNEL="beta"; BETA_ALLOWED=1; PERSIST_CHANNEL=1; shift ;;
+        -stable) CHANNEL="stable"; BETA_ALLOWED=0; PERSIST_CHANNEL=1; shift ;;
         update) CMD_UPDATE=1; shift ;;
         check) CMD_CHECK=1; shift ;;
         --variant=core|--variant=webui|--variant=full) DEPLOY_VARIANT_ARG="${1#--variant=}"; shift ;;
@@ -715,13 +749,117 @@ write_latest_env() {
     return 0
 }
 
-check_updates() {
-    UPDATE_ZATOR=0
-    UPDATE_WEBUI=0
+# --- Каналы релизов: стабильный и бета ---
+
+# Бета-признак — "beta" в имени релиза или тега в любом регистре. Флагом
+# prerelease на GitHub не пользуемся: движущийся релиз latest помечен им
+# всегда, а ошибочно опубликованная бета — как раз нет.
+release_is_beta() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        *beta*) return 0 ;;
+    esac
+    return 1
+}
+
+releases_list_url() {
+    # список релизов GitHub; у зеркал-источников его нет — берём API
+    # репозитория из RAW_URL (лейаут релизов тот же)
+    if [ -n "$RELEASES_API_OVERRIDE" ]; then
+        printf '%s' "$RELEASES_API_OVERRIDE"
+        return 0
+    fi
+    case "$RELEASES_BASE" in
+        https://github.com/*/releases/download)
+            rlu_path="${RELEASES_BASE#https://github.com/}"
+            printf 'https://api.github.com/repos/%s/releases?per_page=20' "${rlu_path%/releases/download}"
+            return 0
+            ;;
+    esac
+    [ -n "$repo_owner" ] && [ -n "$repo_name" ] || return 1
+    printf 'https://api.github.com/repos/%s/%s/releases?per_page=20' "$repo_owner" "$repo_name"
+}
+
+# Теги-кандидаты в свежие стабильные релизы (без "beta", кроме движущегося
+# latest), от свежих к старым. Пусто и rc=1 — список релизов недоступен.
+stable_tag_candidates() {
+    stc_tmp="/tmp/z2r_releases_$$.json"
+    rm -f "$stc_tmp"
+    if ! stc_url=$(releases_list_url) || ! fetch_url "$stc_tmp" "$stc_url" 20; then
+        rm -f "$stc_tmp"
+        return 1
+    fi
+    awk '/"tag_name"/ { tag = $0; sub(/.*"tag_name": *"/, "", tag); sub(/".*/, "", tag); print tag }' "$stc_tmp" 2>/dev/null \
+        | while IFS= read -r stc_tag; do
+            [ -n "$stc_tag" ] || continue
+            [ "$stc_tag" = "latest" ] && continue
+            release_is_beta "$stc_tag" || printf '%s\n' "$stc_tag"
+          done
+    rm -f "$stc_tmp"
+    return 0
+}
+
+# Заполняет LATEST_JSON и RESOLVED_TAG релиза канала обновления. Обычный
+# случай — движущийся тег latest. Когда тот оказался бетой, стабильному
+# каналу подставляется свежий номерной релиз без "beta" (RESOLVED_TAG пуст,
+# если списка релизов нет). rc=1 — сервер обновлений недоступен.
+resolve_update_release() {
+    RESOLVED_TAG=""
+    LATEST_IS_BETA=0
     rm -f "$LATEST_JSON"
     if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
         echo "⚠ Не достучались до сервера обновлений."
         return 1
+    fi
+    rur_release=$(latest_json_str release)
+    if ! release_is_beta "$rur_release"; then
+        RESOLVED_TAG=latest
+        return 0
+    fi
+    LATEST_IS_BETA=1
+    echo "⚠ Последняя сборка — бета ($rur_release)."
+    if [ "$BETA_ALLOWED" = 1 ]; then
+        echo "ℹ Бета разрешена (--beta или CHANNEL=beta в конфиге): ставлю её."
+        RESOLVED_TAG=latest
+        return 0
+    fi
+    rur_tries=0
+    for rur_tag in $(stable_tag_candidates); do
+        rur_tries=$((rur_tries + 1))
+        [ "$rur_tries" -le 5 ] || break
+        if fetch_url "$LATEST_JSON" "$RELEASES_BASE/$rur_tag/latest.json" 20; then
+            echo "ℹ Автообновление ставит только стабильные релизы: свежий стабильный $rur_tag."
+            echo "  Бета ставится явно: z2r update --beta."
+            RESOLVED_TAG="$rur_tag"
+            return 0
+        fi
+    done
+    echo "⚠ Свежий стабильный релиз не найден: список релизов недоступен."
+    echo "  Бету можно поставить явно: z2r update --beta"
+    return 0
+}
+
+# Установка свежего релиза канала через номерной тег не должна закреплять
+# версию: TRACKING возвращается на latest, чтобы автообновление продолжало
+# работать (deploy.sh пишет в version.env TRACKING=<тег>).
+unpin_tracking_latest() {
+    [ -f "$DEPLOY_VERSION_FILE" ] || return 0
+    utl_now=$(read_env_value "$DEPLOY_VERSION_FILE" TRACKING)
+    [ "$utl_now" = "latest" ] && return 0
+    if sed -i 's/^TRACKING=.*/TRACKING="latest"/' "$DEPLOY_VERSION_FILE" 2>/dev/null; then
+        echo "ℹ Автообновление следит за релизами (TRACKING=latest)."
+    fi
+}
+
+check_updates() {
+    UPDATE_ZATOR=0
+    UPDATE_WEBUI=0
+    if ! resolve_update_release; then
+        return 1
+    fi
+    if [ "$LATEST_IS_BETA" = 1 ] && [ -z "$RESOLVED_TAG" ]; then
+        # бета на вершине, свежий стабильный не найден: ставить бету нельзя,
+        # сравнивать не с чем — автообновление пропускается
+        return 0
     fi
     lz_sha=$(latest_json_str zatorSha)
     lw_sha=$(latest_json_str webuiSha)
@@ -737,6 +875,11 @@ check_updates() {
         [ "$UPDATE_ZATOR" = 1 ] && update_note="$update_note zator от $(latest_json_str zatorDate)"
         [ "$UPDATE_WEBUI" = 1 ] && update_note="$update_note, Web-панель от $(latest_json_str webuiDate)"
         echo "$update_note"
+    elif [ -f "$DEPLOY_VERSION_FILE" ] && [ -z "$z_sha" ] && [ -n "$lz_sha" ]; then
+        # версия релиза не помечена: сверка невозможна, обычное обновление
+        # молчит — лечится принудительной переустановкой
+        echo "ℹ Установленная версия не определена (нет ZATOR_SHA в version.env)."
+        echo "  Переустановить свежий релиз: z2r update --force"
     else
         echo "✓ Обновлений нет (релиз $(latest_json_str release))."
     fi
@@ -824,6 +967,9 @@ download_release_archive() {
 
 deploy_version() {
     # $1 номер релиза: установка конкретной версии и закрепление (пин)
+    if release_is_beta "$1"; then
+        echo "ℹ Внимание: релиз $1 — бета."
+    fi
     echo "=== Установка релиза $1 ==="
     if have_deploy_sh; then
         if run_deploy_sh "$RELEASES_BASE/$1/zator-$(launcher_variant).tar.gz" "$(launcher_variant)" "$1"; then
@@ -865,6 +1011,13 @@ deploy_local_tar() {
 }
 
 auto_tar_update() {
+    # тег релиза выбрал resolve_update_release (check_updates): движущийся
+    # latest или свежий стабильный номерной, когда latest — бета
+    if [ -z "$RESOLVED_TAG" ]; then
+        echo "✗ Свежий стабильный релиз не найден, бета без --beta не ставится."
+        return 1
+    fi
+    atu_tag="$RESOLVED_TAG"
     # умный выбор варианта: устарел только webui и он установлен -> webui
     if [ -n "$DEPLOY_VARIANT_ARG" ]; then
         atu_variant="$DEPLOY_VARIANT_ARG"
@@ -877,19 +1030,53 @@ auto_tar_update() {
     else
         atu_variant=core
     fi
-    echo "=== Обновление zator из релиза ($atu_variant) ==="
+    echo "=== Обновление zator из релиза $atu_tag ($atu_variant) ==="
     if have_deploy_sh; then
-        if run_deploy_sh "$RELEASES_BASE/latest/zator-$atu_variant.tar.gz" "$atu_variant" latest; then
+        if run_deploy_sh "$RELEASES_BASE/$atu_tag/zator-$atu_variant.tar.gz" "$atu_variant" "$atu_tag"; then
+            unpin_tracking_latest
             return 0
         fi
         echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
     fi
-    atu_arch=$(download_release_archive "$atu_variant" latest) || return 1
+    atu_arch=$(download_release_archive "$atu_variant" "$atu_tag") || return 1
     bootstrap_deploy_sh "$atu_arch" || { rm -f "$atu_arch"; return 1; }
-    run_bootstrap_deploy "$atu_arch" "$atu_variant" latest
+    run_bootstrap_deploy "$atu_arch" "$atu_variant" "$atu_tag"
     atu_rc=$?
     rm -f "$atu_arch"
+    [ "$atu_rc" -eq 0 ] && unpin_tracking_latest
     return $atu_rc
+}
+
+force_tar_update() {
+    # Принудительная установка свежего релиза канала (по умолчанию
+    # стабильного, с --beta — беты), без сравнения с установленной версией.
+    # Чинит состояния, в которых обычное обновление не срабатывает: нет
+    # version.env, версия релиза не помечена, закреплена старая, из файлов
+    # только web-панель. deploy.sh при установке core/full переписывает
+    # метки версии из version.env архива.
+    if ! resolve_update_release; then
+        return 1
+    fi
+    if [ -z "$RESOLVED_TAG" ]; then
+        echo "✗ Свежий стабильный релиз не найден, бета без --beta не ставится."
+        return 1
+    fi
+    ftu_variant="$(launcher_variant)"
+    echo "=== Принудительная установка релиза $(latest_json_str release) ($ftu_variant) ==="
+    if have_deploy_sh; then
+        if run_deploy_sh "$RELEASES_BASE/$RESOLVED_TAG/zator-$ftu_variant.tar.gz" "$ftu_variant" "$RESOLVED_TAG"; then
+            unpin_tracking_latest
+            return 0
+        fi
+        echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
+    fi
+    ftu_arch=$(download_release_archive "$ftu_variant" "$RESOLVED_TAG") || return 1
+    bootstrap_deploy_sh "$ftu_arch" || { rm -f "$ftu_arch"; return 1; }
+    run_bootstrap_deploy "$ftu_arch" "$ftu_variant" "$RESOLVED_TAG"
+    ftu_rc=$?
+    rm -f "$ftu_arch"
+    [ "$ftu_rc" -eq 0 ] && unpin_tracking_latest
+    return $ftu_rc
 }
 
 migrate_tar_install() {
@@ -897,31 +1084,40 @@ migrate_tar_install() {
     # неё, пользовательские файлы защищены классом keep-if-exists
     mgi_variant="$(launcher_variant)"
     echo "Установка ведётся пофайлово из ветки. Перехожу на релизные архивы ($mgi_variant)..."
+    if ! resolve_update_release; then
+        echo "⚠ Сервер релизов недоступен."
+        return 1
+    fi
+    if [ -z "$RESOLVED_TAG" ]; then
+        echo "✗ Свежий стабильный релиз не найден (последняя сборка — бета)."
+        echo "  Поставить бету: z2r --beta"
+        return 1
+    fi
     if have_deploy_sh; then
-        if run_deploy_sh "$RELEASES_BASE/latest/zator-$mgi_variant.tar.gz" "$mgi_variant" latest; then
+        if run_deploy_sh "$RELEASES_BASE/$RESOLVED_TAG/zator-$mgi_variant.tar.gz" "$mgi_variant" "$RESOLVED_TAG"; then
+            unpin_tracking_latest
             return 0
         fi
         echo "⚠ lib/deploy.sh не справился, пробую bootstrap lib/deploy.sh из архива"
     fi
-    rm -f "$LATEST_JSON"
-    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
-        echo "⚠ Сервер релизов недоступен."
-        return 1
-    fi
-    mgi_arch=$(download_release_archive "$mgi_variant" latest) || return 1
+    mgi_arch=$(download_release_archive "$mgi_variant" "$RESOLVED_TAG") || return 1
     bootstrap_deploy_sh "$mgi_arch" || { rm -f "$mgi_arch"; return 1; }
-    run_bootstrap_deploy "$mgi_arch" "$mgi_variant" latest
+    run_bootstrap_deploy "$mgi_arch" "$mgi_variant" "$RESOLVED_TAG"
     mgi_rc=$?
     rm -f "$mgi_arch"
+    [ "$mgi_rc" -eq 0 ] && unpin_tracking_latest
     return $mgi_rc
 }
 
 fresh_tar_install() {
     # rc: 0 — установлено, 1 — сбой (можно фолбэк на raw), 2 — нельзя ставить (место)
     echo "=== Установка zator с нуля ==="
-    rm -f "$LATEST_JSON"
-    if ! fetch_url "$LATEST_JSON" "$RELEASES_BASE/latest/latest.json" 20; then
-        echo "⚠ Сервер релизов недоступен."
+    if ! resolve_update_release; then
+        return 1
+    fi
+    if [ -z "$RESOLVED_TAG" ]; then
+        echo "✗ Свежий стабильный релиз не найден (последняя сборка — бета)."
+        echo "  Поставить бету: z2r --beta"
         return 1
     fi
     ftv_full=$(latest_asset_field full size)
@@ -952,11 +1148,12 @@ fresh_tar_install() {
     ftv_size=$(latest_asset_field "$ftv_variant" size)
     [ -n "$ftv_size" ] || { echo "✗ Нет данных о размере архива."; return 1; }
     echo "Скачиваю zator-$ftv_variant.tar.gz (~$(( (ftv_size + 1048575) / 1048576 )) МБ)..."
-    ftv_arch=$(download_release_archive "$ftv_variant" latest) || return 1
+    ftv_arch=$(download_release_archive "$ftv_variant" "$RESOLVED_TAG") || return 1
     bootstrap_deploy_sh "$ftv_arch" || { rm -f "$ftv_arch"; return 1; }
-    run_bootstrap_deploy "$ftv_arch" "$ftv_variant" latest
+    run_bootstrap_deploy "$ftv_arch" "$ftv_variant" "$RESOLVED_TAG"
     ftv_rc=$?
     rm -f "$ftv_arch"
+    [ "$ftv_rc" -eq 0 ] && unpin_tracking_latest
     return $ftv_rc
 }
 
@@ -1098,6 +1295,16 @@ if [ "$PERSIST_AUTOUPDATE_ON" = 1 ]; then
     echo "✓ Автообновление включено: AUTOUPDATE=on в $Z2R_CONF"
 fi
 
+if [ "$PERSIST_CHANNEL" = 1 ]; then
+    [ "$URL_ARGS_GIVEN" -eq 1 ] || save_conf
+    if [ "$CHANNEL" = "beta" ]; then
+        echo "✓ Бета-канал включён: CHANNEL=beta в $Z2R_CONF"
+        echo "  Обновления ставят и бета-релизы. Вернуться: z2r -stable"
+    else
+        echo "✓ Стабильный канал: CHANNEL=stable в $Z2R_CONF"
+    fi
+fi
+
 # Если запущен из установленной команды - проверяем обновления
 if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
     echo "Проверка обновлений установщика..."
@@ -1134,8 +1341,8 @@ fi
 
 # --- Главное дерево развёртывания ---
 # Основной путь — tar-релизы; raw-пофайловый остаётся резервом (сбой сети/релизов,
-# -raw-update, староверы). Порядок: локальный файл > пин-версия > свежая установка >
-# проверка/автообновление.
+# -raw-update, староверы). Порядок: локальный файл > пин-версия > принудительная
+# установка > свежая установка > проверка/автообновление.
 TAR_FLOW_DONE=0
 TAR_FLOW_SKIP=0
 if [ "$RAW_UPDATE" = 1 ]; then
@@ -1144,6 +1351,8 @@ elif [ -n "$LOCAL_TAR" ]; then
     deploy_local_tar "$LOCAL_TAR" && TAR_FLOW_DONE=1
 elif [ -n "$DEPLOY_VERSION_ARG" ]; then
     deploy_version "$DEPLOY_VERSION_ARG" && TAR_FLOW_DONE=1
+elif [ "$FORCE_UPDATE" = 1 ]; then
+    force_tar_update && TAR_FLOW_DONE=1
 elif ! zator_installed; then
     fresh_tar_install
     case $? in
