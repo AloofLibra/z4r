@@ -1251,7 +1251,12 @@ run_old_z2r() {
     if [ -n "$MIRROR_URL" ]; then
         export Z2R_PROJECT_MIRROR_BASE="$MIRROR_URL"
     fi
-    [ -t 0 ] && exec "$SHELL_CMD" ./z2r.sh "$@" || exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/tty
+    [ -t 0 ] && exec "$SHELL_CMD" ./z2r.sh "$@"
+    if ( : < /dev/tty ) 2>/dev/null; then
+        exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/tty
+    else
+        exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/null
+    fi
 }
 
 abort_update_run_old() {
