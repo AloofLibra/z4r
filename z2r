@@ -1309,7 +1309,21 @@ if [ "$PERSIST_CHANNEL" = 1 ]; then
 fi
 
 # Если запущен из установленной команды - проверяем обновления
-if [ "$SCRIPT_PATH" = "$BIN_PATH" ] && [ "$NO_UPDATE" != 1 ]; then
+if [ "$SCRIPT_PATH" != "$BIN_PATH" ]; then
+    # Первый запуск - установка
+    echo "Установка команды z2r в $BIN_PATH..."
+
+    if [ -f "$SCRIPT_PATH" ] && mv "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null; then
+        :
+    else
+        cp "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null || echo "⚠ Не удалось установить команду z2r в $BIN_PATH"
+    fi
+
+    if [ -f "$BIN_PATH" ]; then
+        chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
+    fi
+    echo ""
+elif [ "$NO_UPDATE" != 1 ]; then
     echo "Проверка обновлений установщика..."
     TEMP_INSTALLER="/tmp/z2r_inst_$$"
 
@@ -1326,20 +1340,6 @@ if [ "$SCRIPT_PATH" = "$BIN_PATH" ] && [ "$NO_UPDATE" != 1 ]; then
         fi
         rm -f "$TEMP_INSTALLER"
     fi
-else
-    # Первый запуск - установка
-    echo "Установка команды z2r в $BIN_PATH..."
-
-    if [ -f "$SCRIPT_PATH" ] && mv "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null; then
-        :
-    else
-        cp "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null || echo "⚠ Не удалось установить команду z2r в $BIN_PATH"
-    fi
-
-    if [ -f "$BIN_PATH" ]; then
-        chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
-    fi
-    echo ""
 fi
 
 # --- Главное дерево развёртывания ---
