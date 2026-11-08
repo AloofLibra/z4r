@@ -213,6 +213,7 @@ NO_UPDATE=0
 RAW_UPDATE=0
 CMD_UPDATE=0
 CMD_CHECK=0
+PERSIST_AUTOUPDATE=0
 PERSIST_AUTOUPDATE_ON=0
 PERSIST_CHANNEL=0
 FORCE_UPDATE=0
@@ -331,11 +332,11 @@ fi
 
 # Проверка wget или curl
 if which curl >/dev/null 2>&1; then
-    DL_CMD="curl -sS -L -o"
-    DL_TIMEOUT="--max-time 3"
+    DL_CMD="curl -sSf -L -o"
+    DL_TIMEOUT="--max-time 10"
 elif which wget >/dev/null 2>&1; then
     DL_CMD="wget -q -O"
-    DL_TIMEOUT="-T 3"
+    DL_TIMEOUT="-T 10"
 else
     echo "Ошибка: wget или curl не найдены"
     exit 1
@@ -350,7 +351,7 @@ download_url() {
     # старые сборки wget на роутерах не поддерживают аналогичный режим.
     extra_args="${3:-}"
     if which curl >/dev/null 2>&1; then
-        curl -sS -L -o "$1" $DL_TIMEOUT $extra_args "$2" 2>/dev/null
+        curl -sSf -L -o "$1" $DL_TIMEOUT $extra_args "$2" 2>/dev/null
         return $?
     fi
     wget -q -O "$1" $DL_TIMEOUT "$2" 2>/dev/null
@@ -1250,7 +1251,12 @@ run_old_z2r() {
     if [ -n "$MIRROR_URL" ]; then
         export Z2R_PROJECT_MIRROR_BASE="$MIRROR_URL"
     fi
-    [ -t 0 ] && exec "$SHELL_CMD" ./z2r.sh "$@" || exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/tty
+    [ -t 0 ] && exec "$SHELL_CMD" ./z2r.sh "$@"
+    if ( : < /dev/tty ) 2>/dev/null; then
+        exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/tty
+    else
+        exec "$SHELL_CMD" ./z2r.sh "$@" < /dev/null
+    fi
 }
 
 abort_update_run_old() {
@@ -1274,8 +1280,10 @@ fi
 
 # Сначала проверяем локальный DNS. Если он возвращает один рабочий IP,
 # используем его и пропускаем Google DoH проверку.
-if ! check_local_dns; then
-    prepare_raw_github_resolve
+if [ "$NO_UPDATE" != 1 ]; then
+    if ! check_local_dns; then
+        prepare_raw_github_resolve
+    fi
 fi
 
 if [ "$URL_ARGS_GIVEN" -eq 1 ]; then
@@ -1306,7 +1314,21 @@ if [ "$PERSIST_CHANNEL" = 1 ]; then
 fi
 
 # Если запущен из установленной команды - проверяем обновления
-if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
+if [ "$SCRIPT_PATH" != "$BIN_PATH" ]; then
+    # Первый запуск - установка
+    echo "Установка команды z2r в $BIN_PATH..."
+
+    if [ -f "$SCRIPT_PATH" ] && mv "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null; then
+        :
+    else
+        cp "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null || echo "⚠ Не удалось установить команду z2r в $BIN_PATH"
+    fi
+
+    if [ -f "$BIN_PATH" ]; then
+        chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
+    fi
+    echo ""
+elif [ "$NO_UPDATE" != 1 ]; then
     echo "Проверка обновлений установщика..."
     TEMP_INSTALLER="/tmp/z2r_inst_$$"
 
@@ -1323,20 +1345,6 @@ if [ "$SCRIPT_PATH" = "$BIN_PATH" ]; then
         fi
         rm -f "$TEMP_INSTALLER"
     fi
-else
-    # Первый запуск - установка
-    echo "Установка команды z2r в $BIN_PATH..."
-
-    if [ -f "$SCRIPT_PATH" ] && mv "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null; then
-        :
-    else
-        cp "$SCRIPT_PATH" "$BIN_PATH" 2>/dev/null || echo "⚠ Не удалось установить команду z2r в $BIN_PATH"
-    fi
-
-    if [ -f "$BIN_PATH" ]; then
-        chmod +x "$BIN_PATH" && echo "✓ Команда z2r установлена"
-    fi
-    echo ""
 fi
 
 # --- Главное дерево развёртывания ---
@@ -1345,6 +1353,7 @@ fi
 # установка > свежая установка > проверка/автообновление.
 TAR_FLOW_DONE=0
 TAR_FLOW_SKIP=0
+TRACKING_NOW=$(read_env_value "$DEPLOY_VERSION_FILE" TRACKING)
 if [ "$RAW_UPDATE" = 1 ]; then
     echo "ℹ Режим -raw-update: пофайловое обновление из ветки $BRANCH"
 elif [ -n "$LOCAL_TAR" ]; then
@@ -1361,13 +1370,10 @@ elif ! zator_installed; then
     esac
 elif [ ! -f "$DEPLOY_VERSION_FILE" ]; then
     migrate_tar_install && TAR_FLOW_DONE=1
-elif check_updates; then
+elif [ "$NO_UPDATE" != 1 ] && check_updates; then
     # сервер доступен: независимо от вердикта raw-фолбэк не нужен
-    TRACKING_NOW=$(read_env_value "$DEPLOY_VERSION_FILE" TRACKING)
     if [ "$CMD_CHECK" = 1 ]; then
         : # только проверка, ничего не качаем
-    elif [ "$NO_UPDATE" = 1 ]; then
-        : # уведомление уже напечатано check_updates
     elif [ "$CMD_UPDATE" = 1 ]; then
         auto_tar_update && TAR_FLOW_DONE=1
     elif [ "$AUTOUPDATE" = "off" ]; then
@@ -1385,7 +1391,7 @@ if [ "$TAR_FLOW_DONE" = 1 ]; then
     echo ""
 elif [ "$TAR_FLOW_SKIP" = 1 ] && [ -f "${INSTALL_DIR}/z2r.sh" ]; then
     :
-elif { [ "$NO_UPDATE" = 1 ] || [ "$CMD_CHECK" = 1 ]; } && zator_installed && [ -f "${INSTALL_DIR}/z2r.sh" ]; then
+elif { [ "$NO_UPDATE" = 1 ] || [ "$CMD_CHECK" = 1 ] || [ "$AUTOUPDATE" = "off" ] || { [ -n "$TRACKING_NOW" ] && [ "$TRACKING_NOW" != "latest" ]; }; } && zator_installed && [ -f "${INSTALL_DIR}/z2r.sh" ]; then
     echo "ℹ Файлы zator не тронуты."
 else
 
